@@ -6,6 +6,8 @@
 
 pub mod error;
 pub mod reader;
+pub mod writer;
 
 pub use error::XmiParseError;
 pub use reader::XmiReader;
+pub use writer::XmiWriter;
