@@ -53,6 +53,7 @@ tracing-subscriber = "0.3"
 
 # Data structures
 slotmap = "1"
+indexmap = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 bitflags = "2"
 

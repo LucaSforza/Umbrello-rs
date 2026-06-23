@@ -38,11 +38,9 @@ impl FromStr for UmlId {
     }
 }
 
-/// Arena key for objects stored in the ModelRepository.
-///
-/// This is a generational index — it encodes both the slot index and a generation
-/// counter to detect use-after-free (stale access). It is cheap to copy and compare.
-pub type ObjectKey = slotmap::DefaultKey;
+// ObjectKey was previously intended for slotmap-based storage.
+// The design has moved to IndexMap with UmlId as the sole key.
+// This alias was removed in Milestone 4.
 
 // ─── Tests ────────────────────────────────────────────────────────────
 

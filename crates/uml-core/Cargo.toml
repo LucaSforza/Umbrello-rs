@@ -8,7 +8,7 @@ description = "Pure UML domain model — types, enums, identity, arena-based rep
 
 [dependencies]
 uml-common = { path = "../uml-common" }
-slotmap.workspace = true
+indexmap.workspace = true
 uuid.workspace = true
 bitflags.workspace = true
 serde.workspace = true

@@ -6,11 +6,11 @@
 //!
 //! # Crate structure
 //!
-//! - `id`     — Unique identifier types (`UmlId`, `ObjectKey`)
+//! - `id`     — Unique identifier types (`UmlId`)
 //! - `types`  — Enumerations: `ObjectType`, `AssociationType`, `DiagramType`, `Visibility`, etc.
 //! - `elements` — UML model element types: `Package`, `Class`, `Interface`, `Enum`
 //! - `model`  — UML model structs (future)
-//! - `repository` — Arena-based storage for UML model elements (future)
+//! - `repository` — Central model storage using `IndexMap<UmlId, ModelElement>` with parent index
 //! - `event`   — Model change events for undo/observer systems (future)
 
 #![forbid(unsafe_code)]
@@ -30,4 +30,5 @@ pub use elements::{
     NamedElement, Operation, Package, Parameter, TemplateParameter,
 };
 pub use id::UmlId;
+pub use repository::{ModelError, ReferenceError, ReferenceField, UmlModel};
 pub use types::{AssociationType, DiagramType, ObjectType, ParameterDirection, Visibility};

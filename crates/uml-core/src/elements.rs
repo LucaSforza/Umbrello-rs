@@ -248,8 +248,9 @@ pub struct Package {
     /// Common element metadata.
     pub base: ElementBase,
     /// IDs of child elements contained in this package.
+    /// Use `UmlModel::add_to_package()` / `remove_from_package()` to modify.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<UmlId>,
+    pub(crate) children: Vec<UmlId>,
 }
 
 impl Package {
@@ -263,12 +264,16 @@ impl Package {
     }
 
     /// Add a child element by ID.
-    pub fn add_child(&mut self, child_id: UmlId) {
+    /// Prefer using `UmlModel::add_to_package()` which also maintains the parent index.
+    #[allow(dead_code)]
+    pub(crate) fn add_child(&mut self, child_id: UmlId) {
         self.children.push(child_id);
     }
 
     /// Remove a child by ID. Returns `true` if the child was found and removed.
-    pub fn remove_child(&mut self, child_id: UmlId) -> bool {
+    /// Prefer using `UmlModel::remove_from_package()` which also maintains the parent index.
+    #[allow(dead_code)]
+    pub(crate) fn remove_child(&mut self, child_id: UmlId) -> bool {
         if let Some(pos) = self.children.iter().position(|&id| id == child_id) {
             self.children.remove(pos);
             true
