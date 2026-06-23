@@ -46,3 +46,5 @@ pub use elements::{
 pub use id::UmlId;
 pub use repository::{ModelError, ReferenceError, ReferenceField, UmlModel};
 pub use types::{AssociationType, DiagramType, ObjectType, ParameterDirection, Visibility};
+pub use undo::commands;
+pub use undo::{Command, CommandError, History};
