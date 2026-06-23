@@ -16,9 +16,10 @@ use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
 
 use uml_core::{
-    AssociationType, Attribute, Class, ClassifierData, Datatype, ElementBase, Enum, Interface,
-    ModelElement, Operation, Package, Parameter, ParameterDirection, Relationship, TypeReference,
-    UmlId, UmlModel, Visibility,
+    AssociationType, Attribute, Class, ClassifierData, Datatype, Diagram, DiagramKind, EdgeId,
+    ElementBase, Enum, Interface, LineRouting, ModelElement, Operation, Package, Parameter,
+    ParameterDirection, Point, Rect, Relationship, TypeReference, UmlId, UmlModel, ViewEdge,
+    ViewNode, Visibility,
 };
 
 use super::error::XmiParseError;
@@ -119,6 +120,24 @@ enum PendingGeneralization {
     },
 }
 
+/// Data collected from one `<assocwidget>` element during diagram parsing.
+#[derive(Debug, Clone)]
+struct PendingAssocWidget {
+    /// XMI ID of this assocwidget.
+    #[allow(dead_code)]
+    xmi_id: String,
+    /// XMI ID of widget A (source).
+    widget_a_xmi: String,
+    /// XMI ID of widget B (target).
+    widget_b_xmi: String,
+    /// C++ AssociationType number (500+).
+    cpp_type: i32,
+    /// Start point of the linepath.
+    start_point: Option<Point>,
+    /// End point of the linepath.
+    end_point: Option<Point>,
+}
+
 // ─── XmiReader ─────────────────────────────────────────────────────────
 
 /// XMI reader that populates a `UmlModel` from XML input.
@@ -179,6 +198,20 @@ pub struct XmiReader {
     pending_gen_idrefs: Vec<PendingGeneralization>,
     /// Generalizations in `Direct` form (standalone with child/parent).
     pending_gen_direct: Vec<PendingGeneralization>,
+
+    // ── Diagram-parsing state ──────────────────────────────────────────
+    /// True when inside `<XMI.extension>` (inside content).
+    inside_xmi_extension: bool,
+    /// True when inside `<diagrams>` inside an XMI extension.
+    inside_diagrams: bool,
+    /// The diagram currently being populated.
+    current_diagram: Option<Diagram>,
+    /// True when inside `<associations>` inside a diagram.
+    inside_associations: bool,
+    /// True when inside `<linepath>` nested in an assocwidget.
+    inside_linepath: bool,
+    /// Data collected for the current assocwidget (set when we see `<assocwidget>`).
+    pending_assocwidget: Option<PendingAssocWidget>,
 }
 
 impl XmiReader {
@@ -206,6 +239,12 @@ impl XmiReader {
             pending_relations: Vec::new(),
             pending_gen_idrefs: Vec::new(),
             pending_gen_direct: Vec::new(),
+            inside_xmi_extension: false,
+            inside_diagrams: false,
+            current_diagram: None,
+            inside_associations: false,
+            inside_linepath: false,
+            pending_assocwidget: None,
         }
     }
 
@@ -262,8 +301,17 @@ impl XmiReader {
                         continue;
                     }
 
-                    // Handle known elements
+                    // Compute local name early for diagram-parsing dispatch
                     let local_name = Self::local_name(tag);
+
+                    // ── Diagram parsing within <XMI.extension> ──────────
+                    // When inside an XMI.extension, handle UML diagram tags.
+                    if self.inside_xmi_extension {
+                        self.handle_xmi_extension_start(local_name, e, model)?;
+                        continue;
+                    }
+
+                    // Handle known elements
                     match local_name {
                         "Model" | "Package" => {
                             if let Some(elem) = self.parse_package(e)? {
@@ -344,8 +392,9 @@ impl XmiReader {
                             // Wrapper — just enter
                         },
                         "XMI.extension" => {
-                            // Diagram data inside content — skip the subtree
-                            skip_element_depth = 1;
+                            // Enter the XMI.extension subtree to parse diagrams.
+                            // We do NOT skip it — we descend into it.
+                            self.inside_xmi_extension = true;
                         },
                         _ => {
                             // Skip unknown elements silently (lenient parsing)
@@ -377,8 +426,16 @@ impl XmiReader {
                         continue;
                     }
 
-                    // Handle known elements (self-closing)
+                    // Compute local name early for diagram-parsing dispatch
                     let local_name = Self::local_name(tag);
+
+                    // ── Diagram parsing within <XMI.extension> ──────────
+                    if self.inside_xmi_extension {
+                        self.handle_xmi_extension_start(local_name, e, model)?;
+                        continue;
+                    }
+
+                    // Handle known elements (self-closing)
                     match local_name {
                         "Model" | "Package" => {
                             if let Some(elem) = self.parse_package(e)? {
@@ -488,8 +545,33 @@ impl XmiReader {
                         "Association.connection" => {
                             self.inside_association_connection = false;
                         },
+                        // ── Diagram section end tags ─────────────────────
                         "XMI.extension" => {
-                            // Was being skipped — nothing to do
+                            self.inside_xmi_extension = false;
+                            self.inside_diagrams = false;
+                            self.inside_associations = false;
+                            self.inside_linepath = false;
+                            self.current_diagram = None;
+                            self.pending_assocwidget = None;
+                        },
+                        "diagrams" => {
+                            self.inside_diagrams = false;
+                        },
+                        "diagram" => {
+                            // Push the completed diagram to the model
+                            if let Some(diagram) = self.current_diagram.take() {
+                                model.add_diagram(diagram);
+                            }
+                        },
+                        "assocwidget" => {
+                            // Finalize and add the association widget as a ViewEdge
+                            self.finalize_assocwidget(model);
+                        },
+                        "linepath" => {
+                            self.inside_linepath = false;
+                        },
+                        "associations" => {
+                            self.inside_associations = false;
                         },
                         _ => {},
                     }
@@ -1226,6 +1308,244 @@ impl XmiReader {
         }
         Ok(())
     }
+
+    // ─── Diagram parsing ────────────────────────────────────────────────
+
+    /// Handle a Start/Empty event while inside `<XMI.extension>`.
+    /// Dispatches to diagram-related tag handlers.
+    fn handle_xmi_extension_start(
+        &mut self,
+        local_name: &str,
+        e: &quick_xml::events::BytesStart,
+        _model: &mut UmlModel,
+    ) -> Result<(), XmiParseError> {
+        // Handle tags within diagrams section
+        if self.inside_diagrams || self.current_diagram.is_some() {
+            match local_name {
+                "diagram" => {
+                    self.parse_xmi_diagram(e)?;
+                    return Ok(());
+                },
+                // Widget elements — add nodes to current diagram
+                "classwidget" | "interfacewidget" | "notewidget" | "packagewidget"
+                | "usecasewidget" | "actorwidget" | "componentwidget" | "deploymentwidget"
+                | "datatypewidget" | "enumwidget" | "signalwidget" | "exceptionwidget"
+                | "entitywidget" | "objectwidget" | "categorywidget" => {
+                    self.parse_xmi_widget(e)?;
+                    return Ok(());
+                },
+                // Association widget
+                "assocwidget" => {
+                    self.parse_assoc_widget_start(e)?;
+                    return Ok(());
+                },
+                // Linepath child elements
+                "startpoint" => {
+                    self.parse_linepoint(e, true)?;
+                    return Ok(());
+                },
+                "endpoint" => {
+                    self.parse_linepoint(e, false)?;
+                    return Ok(());
+                },
+                _ => {
+                    // For all other elements inside diagram context, skip silently.
+                    // This includes: <widgets>, <associations>, <messages>, <linepath>,
+                    // <floatingtext>, and any unknown widget types.
+                    return Ok(());
+                },
+            }
+        }
+
+        // Top-level tags within <XMI.extension> (before any <diagram>)
+        if local_name == "diagrams" {
+            self.inside_diagrams = true;
+        }
+        // Skip non-diagram content inside XMI.extension (docsettings, listview, etc.)
+        Ok(())
+    }
+
+    /// Parse a `<diagram>` element and set up `current_diagram`.
+    fn parse_xmi_diagram(
+        &mut self,
+        e: &quick_xml::events::BytesStart,
+    ) -> Result<(), XmiParseError> {
+        let name = Self::attr_value(e, "name").unwrap_or_default();
+        let type_num: i32 = Self::attr_value(e, "type")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let kind = DiagramKind::from_type_num(type_num);
+
+        self.current_diagram = Some(Diagram::new(name, kind));
+        Ok(())
+    }
+
+    /// Parse a widget element (classwidget, interfacewidget, etc.) and
+    /// add it as a `ViewNode` to the current diagram.
+    fn parse_xmi_widget(&mut self, e: &quick_xml::events::BytesStart) -> Result<(), XmiParseError> {
+        let xmi_id = Self::attr_value(e, "xmi.id").unwrap_or_default();
+        let x: f64 = Self::attr_value(e, "x")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        let y: f64 = Self::attr_value(e, "y")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        let width: f64 = Self::attr_value(e, "width")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100.0);
+        let height: f64 = Self::attr_value(e, "height")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50.0);
+
+        // Look up the model element's UmlId via the xmi.id mapping
+        if let Some(&uml_id) = self.id_map.get(&xmi_id) {
+            if let Some(ref mut diagram) = self.current_diagram {
+                let node = ViewNode::new(uml_id, Rect::new(x, y, width, height));
+                diagram.add_node(uml_id, node);
+            }
+        }
+        Ok(())
+    }
+
+    /// Parse an `<assocwidget>` start element and set up pending association data.
+    fn parse_assoc_widget_start(
+        &mut self,
+        e: &quick_xml::events::BytesStart,
+    ) -> Result<(), XmiParseError> {
+        let xmi_id = Self::attr_value(e, "xmi.id").unwrap_or_default();
+        let widget_a = Self::attr_value(e, "widgetaid").unwrap_or_default();
+        let widget_b = Self::attr_value(e, "widgetbid").unwrap_or_default();
+        let cpp_type: i32 = Self::attr_value(e, "type")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(503); // default to Association
+
+        self.pending_assocwidget = Some(PendingAssocWidget {
+            xmi_id,
+            widget_a_xmi: widget_a,
+            widget_b_xmi: widget_b,
+            cpp_type,
+            start_point: None,
+            end_point: None,
+        });
+        Ok(())
+    }
+
+    /// Parse a `<startpoint>` or `<endpoint>` element and update the pending
+    /// association widget.
+    fn parse_linepoint(
+        &mut self,
+        e: &quick_xml::events::BytesStart,
+        is_start: bool,
+    ) -> Result<(), XmiParseError> {
+        let x: f64 = Self::attr_value(e, "startx")
+            .or_else(|| Self::attr_value(e, "endx"))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        let y: f64 = Self::attr_value(e, "starty")
+            .or_else(|| Self::attr_value(e, "endy"))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+
+        if let Some(ref mut paw) = self.pending_assocwidget {
+            let point = Point::new(x, y);
+            if is_start {
+                paw.start_point = Some(point);
+            } else {
+                paw.end_point = Some(point);
+            }
+        }
+        Ok(())
+    }
+
+    /// Finalize a pending association widget, resolve widget references to
+    /// model element IDs, and add a `ViewEdge` to the current diagram.
+    fn finalize_assocwidget(&mut self, model: &mut UmlModel) {
+        let paw = match self.pending_assocwidget.take() {
+            Some(paw) => paw,
+            None => return,
+        };
+
+        // Only proceed if both ends resolve to known UmlIds
+        let widget_a_uml = match self.id_map.get(&paw.widget_a_xmi) {
+            Some(&id) => id,
+            None => return,
+        };
+        let widget_b_uml = match self.id_map.get(&paw.widget_b_xmi) {
+            Some(&id) => id,
+            None => return,
+        };
+
+        // Determine the AssociationType from the C++ enum value
+        let assoc_type = Self::cpp_assoc_type_to_rust(paw.cpp_type);
+
+        // Build waypoints
+        let waypoints: Vec<Point> = paw.start_point.into_iter().chain(paw.end_point).collect();
+
+        // Find or create a relationship ID for the edge.
+        // For Generalization/Realization, look for an existing relationship
+        // between the two elements.
+        let rel_id = match assoc_type {
+            AssociationType::Generalization | AssociationType::Realization => {
+                // Try to find an existing relationship of this type
+                let existing: Option<UmlId> = model
+                    .iter()
+                    .filter_map(|(id, e)| {
+                        if let uml_core::ModelElement::Relationship(r) = e {
+                            if r.kind == assoc_type
+                                && ((r.source_id == widget_a_uml && r.target_id == widget_b_uml)
+                                    || (r.source_id == widget_b_uml && r.target_id == widget_a_uml))
+                            {
+                                return Some(id);
+                            }
+                        }
+                        None
+                    })
+                    .next();
+                existing.unwrap_or_else(|| {
+                    // Create a new relationship if none exists
+                    let rel = uml_core::Relationship::new(assoc_type, widget_a_uml, widget_b_uml);
+                    let rel_id = rel.base.id;
+                    model.insert(uml_core::ModelElement::Relationship(rel));
+                    rel_id
+                })
+            },
+            _ => {
+                let rel = uml_core::Relationship::new(assoc_type, widget_a_uml, widget_b_uml);
+                let rel_id = rel.base.id;
+                model.insert(uml_core::ModelElement::Relationship(rel));
+                rel_id
+            },
+        };
+
+        // Create the ViewEdge with waypoints
+        let edge = ViewEdge::new(rel_id, widget_a_uml, widget_b_uml, LineRouting::Direct);
+        let edge_id = EdgeId::new();
+
+        if let Some(ref mut diagram) = self.current_diagram {
+            diagram.add_edge(edge_id, edge);
+            // Add waypoints to the edge directly via the mutable edges map
+            if let Some(edge_mut) = diagram.edges.get_mut(&edge_id) {
+                edge_mut.waypoints = waypoints;
+            }
+        }
+    }
+
+    /// Map a C++ AssociationType enum value (500+) to our Rust `AssociationType`.
+    /// Based on Uml::AssociationType::Enum in Umbrello C++ (basictypes.h).
+    fn cpp_assoc_type_to_rust(cpp_type: i32) -> AssociationType {
+        match cpp_type {
+            500 => AssociationType::Generalization,
+            501 => AssociationType::Aggregation,
+            502 => AssociationType::Dependency,
+            503 => AssociationType::Association,
+            504 => AssociationType::Association, // Self-association
+            509 => AssociationType::Aggregation, // Containment maps to Aggregation
+            510 => AssociationType::Composition,
+            511 => AssociationType::Realization,
+            512 => AssociationType::Association, // UniAssociation
+            _ => AssociationType::Association,
+        }
+    }
 }
 
 impl Default for XmiReader {
@@ -1884,5 +2204,213 @@ mod tests {
         assert_eq!(op.parameters[0].direction, ParameterDirection::In);
         assert!(op.parameters[0].type_ref.is_primitive());
         assert_eq!(op.parameters[1].name, "b");
+    }
+
+    // ── Diagram parsing tests ──────────────────────────────────────────
+
+    /// Minimal XMI with a class diagram containing a class widget.
+    const XMI_WITH_DIAGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="Person" visibility="public"/>
+    <UML:Interface xmi.id="I1" name="Serializable" visibility="public"/>
+    <XMI.extension xmi.extender="umbrello">
+     <diagrams>
+      <diagram name="Main Class Diagram" type="1" xmi.id="D1">
+       <widgets>
+        <classwidget xmi.id="C1" x="50" y="100" width="150" height="80"/>
+        <interfacewidget xmi.id="I1" x="300" y="100" width="120" height="70"/>
+       </widgets>
+       <messages/>
+       <associations>
+        <assocwidget xmi.id="A1" widgetaid="C1" widgetbid="I1" type="511">
+         <linepath>
+          <startpoint startx="200" starty="140"/>
+          <endpoint endx="300" endy="135"/>
+         </linepath>
+        </assocwidget>
+       </associations>
+      </diagram>
+     </diagrams>
+    </XMI.extension>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extensions xmi.extender="umbrello">
+  <docsettings viewid="D1" uniqueid="" documentation=""/>
+ </XMI.extensions>
+</XMI>"#;
+
+    #[test]
+    fn parse_diagram_with_widgets() {
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        let count = reader
+            .read_from(XMI_WITH_DIAGRAM.as_bytes(), &mut model)
+            .unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        // Model elements should be parsed
+        // count includes the UML:Model wrapper + Class + Interface = 3
+        assert_eq!(count, 3, "should parse 3 structural elements (Model + Class + Interface)");
+        assert!(model.contains(
+            model
+                .iter()
+                .find(|(_, e)| e.name() == "Person")
+                .map(|(id, _)| id)
+                .unwrap()
+        ));
+        assert!(model.contains(
+            model
+                .iter()
+                .find(|(_, e)| e.name() == "Serializable")
+                .map(|(id, _)| id)
+                .unwrap()
+        ));
+
+        // Diagrams should be parsed
+        let diagrams = model.diagrams();
+        assert_eq!(diagrams.len(), 1, "should have exactly one diagram");
+
+        let diag = &diagrams[0];
+        assert_eq!(diag.name, "Main Class Diagram");
+        assert_eq!(diag.kind, DiagramKind::Class);
+
+        // Nodes: 2 (class + interface)
+        assert_eq!(diag.node_count(), 2, "diagram should have 2 nodes");
+        // Verify node positions
+        let person_id = model
+            .iter()
+            .find(|(_, e)| e.name() == "Person")
+            .map(|(id, _)| id)
+            .unwrap();
+        let person_node = diag.get_node(person_id);
+        assert!(person_node.is_some(), "Person should have a node");
+        if let Some(node) = person_node {
+            assert_eq!(node.bounds.x(), 50.0);
+            assert_eq!(node.bounds.y(), 100.0);
+            assert_eq!(node.bounds.width(), 150.0);
+            assert_eq!(node.bounds.height(), 80.0);
+        }
+
+        // Verify edges
+        assert_eq!(diag.edge_count(), 1, "diagram should have 1 edge");
+    }
+
+    #[test]
+    fn parse_diagram_with_assoc_creates_relationship() {
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader
+            .read_from(XMI_WITH_DIAGRAM.as_bytes(), &mut model)
+            .unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        // The assocwidget type=511 (Realization) should create a relationship
+        let rel_count = model
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Relationship(_)))
+            .count();
+        assert_eq!(rel_count, 1, "assocwidget should create one relationship");
+
+        // Get the relationship
+        let rel = model
+            .iter()
+            .find_map(|(_, e)| {
+                if let ModelElement::Relationship(r) = e {
+                    Some(r.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(rel.kind, AssociationType::Realization, "type=511 should map to Realization");
+
+        // Verify edge endpoints
+        let diagrams = model.diagrams();
+        let diag = &diagrams[0];
+        let (_edge_id, edge) = diag.edges.iter().next().unwrap();
+        assert_eq!(
+            edge.source_node_id,
+            model
+                .iter()
+                .find(|(_, e)| e.name() == "Person")
+                .map(|(id, _)| id)
+                .unwrap()
+        );
+        assert_eq!(
+            edge.target_node_id,
+            model
+                .iter()
+                .find(|(_, e)| e.name() == "Serializable")
+                .map(|(id, _)| id)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_diagram_unknown_widget_type_skipped() {
+        // Test that unknown widget types inside diagram are silently skipped
+        let xml = r#"<?xml version="1.0"?><XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3"><XMI.header/><XMI.content><UML:Model xmi.id="m1" name="UML Model"><UML:Namespace.ownedElement><UML:Class xmi.id="C1" name="Person"/><XMI.extension xmi.extender="umbrello"><diagrams><diagram name="Test" type="1" xmi.id="D1"><widgets><classwidget xmi.id="C1" x="10" y="20" width="100" height="50"/></widgets><messages/><associations/></diagram></diagrams></XMI.extension></UML:Namespace.ownedElement></UML:Model></XMI.content></XMI>"#;
+
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        let diagrams = model.diagrams();
+        assert_eq!(diagrams.len(), 1);
+        assert_eq!(diagrams[0].node_count(), 1);
+    }
+
+    #[test]
+    fn parse_multiple_diagrams() {
+        let xml = r#"<?xml version="1.0"?><XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3"><XMI.header/><XMI.content><UML:Model xmi.id="m1" name="UML Model"><UML:Namespace.ownedElement><UML:Class xmi.id="C1" name="A"/><UML:Class xmi.id="C2" name="B"/><XMI.extension xmi.extender="umbrello"><diagrams><diagram name="Diag1" type="1" xmi.id="D1"><widgets><classwidget xmi.id="C1" x="0" y="0" width="100" height="50"/></widgets><messages/><associations/></diagram><diagram name="Diag2" type="3" xmi.id="D2"><widgets><classwidget xmi.id="C2" x="10" y="20" width="80" height="40"/></widgets><messages/><associations/></diagram></diagrams></XMI.extension></UML:Namespace.ownedElement></UML:Model></XMI.content></XMI>"#;
+
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        let diagrams = model.diagrams();
+        assert_eq!(diagrams.len(), 2);
+
+        assert_eq!(diagrams[0].name, "Diag1");
+        assert_eq!(diagrams[0].kind, DiagramKind::Class);
+        assert_eq!(diagrams[0].node_count(), 1);
+
+        assert_eq!(diagrams[1].name, "Diag2");
+        assert_eq!(diagrams[1].kind, DiagramKind::Sequence);
+        assert_eq!(diagrams[1].node_count(), 1);
+    }
+
+    #[test]
+    fn parse_diagram_type_0_defaults_to_class() {
+        let xml = r#"<?xml version="1.0"?><XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3"><XMI.header/><XMI.content><UML:Model xmi.id="m1" name="UML Model"><UML:Namespace.ownedElement><UML:Class xmi.id="C1" name="X"/><XMI.extension xmi.extender="umbrello"><diagrams><diagram name="Test" type="0" xmi.id="D1"><widgets><classwidget xmi.id="C1" x="0" y="0" width="50" height="50"/></widgets><messages/><associations/></diagram></diagrams></XMI.extension></UML:Namespace.ownedElement></UML:Model></XMI.content></XMI>"#;
+
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        let diagrams = model.diagrams();
+        assert_eq!(diagrams.len(), 1);
+        assert_eq!(diagrams[0].kind, DiagramKind::Class);
+    }
+
+    #[test]
+    fn parse_no_diagrams_section() {
+        // File with no diagrams should not produce any diagrams
+        let xml = r#"<?xml version="1.0"?><XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3"><XMI.header/><XMI.content><UML:Model xmi.id="m1" name="UML Model"><UML:Namespace.ownedElement><UML:Class xmi.id="C1" name="X"/></UML:Namespace.ownedElement></UML:Model></XMI.content></XMI>"#;
+
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        assert_eq!(model.diagrams().len(), 0);
     }
 }

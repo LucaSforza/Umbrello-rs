@@ -38,7 +38,9 @@ pub mod xmi;
 
 // Re-exports for convenient access
 pub use common::UmbrelloError;
-pub use diagram::{Diagram, DiagramId, DiagramKind, Point, Rect, Size, ViewEdge, ViewNode};
+pub use diagram::{
+    Diagram, DiagramId, DiagramKind, EdgeId, LineRouting, Point, Rect, Size, ViewEdge, ViewNode,
+};
 pub use elements::{
     Attribute, Class, ClassifierData, Datatype, ElementBase, Enum, EnumLiteral, Interface,
     ModelElement, NamedElement, Operation, Package, Parameter, Relationship, TemplateParameter,

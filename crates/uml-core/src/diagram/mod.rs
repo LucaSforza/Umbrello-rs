@@ -85,6 +85,44 @@ impl DiagramKind {
             Self::Object => "Object",
         }
     }
+
+    /// Return the numeric type number used in Umbrello XMI files.
+    #[must_use]
+    pub fn type_num(self) -> i32 {
+        match self {
+            Self::Class => 1,
+            Self::UseCase => 2,
+            Self::Sequence => 3,
+            Self::Collaboration => 4,
+            Self::State => 5,
+            Self::Activity => 6,
+            Self::Component => 7,
+            Self::Deployment => 8,
+            Self::EntityRelationship => 9,
+            Self::Object => 10,
+        }
+    }
+
+    /// Create a `DiagramKind` from a numeric type number
+    /// (as stored in Umbrello XMI files).
+    /// Returns `DiagramKind::Class` for unknown/0 values.
+    #[must_use]
+    #[allow(clippy::match_same_arms)]
+    pub fn from_type_num(n: i32) -> Self {
+        match n {
+            1 => Self::Class,
+            2 => Self::UseCase,
+            3 => Self::Sequence,
+            4 => Self::Collaboration,
+            5 => Self::State,
+            6 => Self::Activity,
+            7 => Self::Component,
+            8 => Self::Deployment,
+            9 => Self::EntityRelationship,
+            10 => Self::Object,
+            _ => Self::Class,
+        }
+    }
 }
 
 /// A diagram — a visual container for nodes and edges.
@@ -196,5 +234,61 @@ mod tests {
         let id1 = DiagramId::new();
         let id2 = DiagramId::new();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn diagram_kind_type_num_roundtrip() {
+        let kinds = [
+            DiagramKind::Class,
+            DiagramKind::UseCase,
+            DiagramKind::Sequence,
+            DiagramKind::Collaboration,
+            DiagramKind::State,
+            DiagramKind::Activity,
+            DiagramKind::Component,
+            DiagramKind::Deployment,
+            DiagramKind::EntityRelationship,
+            DiagramKind::Object,
+        ];
+        for kind in &kinds {
+            let num = kind.type_num();
+            let restored = DiagramKind::from_type_num(num);
+            assert_eq!(*kind, restored, "roundtrip failed for {kind:?} via num {num}");
+        }
+    }
+
+    #[test]
+    fn diagram_kind_type_num_values() {
+        assert_eq!(DiagramKind::Class.type_num(), 1);
+        assert_eq!(DiagramKind::UseCase.type_num(), 2);
+        assert_eq!(DiagramKind::Sequence.type_num(), 3);
+        assert_eq!(DiagramKind::Collaboration.type_num(), 4);
+        assert_eq!(DiagramKind::State.type_num(), 5);
+        assert_eq!(DiagramKind::Activity.type_num(), 6);
+        assert_eq!(DiagramKind::Component.type_num(), 7);
+        assert_eq!(DiagramKind::Deployment.type_num(), 8);
+        assert_eq!(DiagramKind::EntityRelationship.type_num(), 9);
+        assert_eq!(DiagramKind::Object.type_num(), 10);
+    }
+
+    #[test]
+    fn diagram_kind_from_type_num_defaults() {
+        assert_eq!(DiagramKind::from_type_num(0), DiagramKind::Class);
+        assert_eq!(DiagramKind::from_type_num(99), DiagramKind::Class);
+        assert_eq!(DiagramKind::from_type_num(-1), DiagramKind::Class);
+    }
+
+    #[test]
+    fn diagram_kind_all_from_type_num() {
+        assert_eq!(DiagramKind::from_type_num(1), DiagramKind::Class);
+        assert_eq!(DiagramKind::from_type_num(2), DiagramKind::UseCase);
+        assert_eq!(DiagramKind::from_type_num(3), DiagramKind::Sequence);
+        assert_eq!(DiagramKind::from_type_num(4), DiagramKind::Collaboration);
+        assert_eq!(DiagramKind::from_type_num(5), DiagramKind::State);
+        assert_eq!(DiagramKind::from_type_num(6), DiagramKind::Activity);
+        assert_eq!(DiagramKind::from_type_num(7), DiagramKind::Component);
+        assert_eq!(DiagramKind::from_type_num(8), DiagramKind::Deployment);
+        assert_eq!(DiagramKind::from_type_num(9), DiagramKind::EntityRelationship);
+        assert_eq!(DiagramKind::from_type_num(10), DiagramKind::Object);
     }
 }

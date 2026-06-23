@@ -93,9 +93,16 @@ impl<W: Write> XmiWriter<W> {
         self.writer
             .write_event(Event::End(BytesEnd::new("XMI.content")))?;
 
-        // 7. XMI.extensions (empty for now)
+        // 7. XMI.extensions (diagrams and settings)
         self.writer
             .write_event(Event::Start(BytesStart::new("XMI.extensions")))?;
+
+        // Write docsettings
+        self.write_empty_tag("docsettings", &[("viewid", ""), ("documentation", "")])?;
+
+        // Write diagrams
+        self.write_diagrams(model)?;
+
         self.writer
             .write_event(Event::End(BytesEnd::new("XMI.extensions")))?;
 
@@ -649,6 +656,238 @@ impl<W: Write> XmiWriter<W> {
             },
         }
 
+        Ok(())
+    }
+
+    // ─── Diagram serialization ─────────────────────────────────────────
+
+    /// Write all diagrams from the model into the XMI extensions section.
+    fn write_diagrams(&mut self, model: &UmlModel) -> Result<(), XmiWriteError> {
+        let diagrams = model.diagrams();
+        if diagrams.is_empty() {
+            return Ok(());
+        }
+
+        self.write_tag_open("diagrams", &[])?;
+
+        for diagram in diagrams {
+            // Generate a stable XMI ID for the diagram
+            let diag_xmi_id = self.gen_sub_id();
+
+            // Map diagram kind to type number
+            let type_num = diagram.kind.type_num();
+
+            // Determine if this is a standard diagram with zoom info
+            let (_canvas_height, _canvas_width, zoom) = self.compute_diagram_bounds(diagram);
+
+            let diag_attrs: &[(&str, &str)] = &[
+                ("xmi.id", &diag_xmi_id),
+                ("name", &diagram.name),
+                ("type", &type_num.to_string()),
+                ("canvasheight", &_canvas_height.to_string()),
+                ("canvaswidth", &_canvas_width.to_string()),
+                ("zoom", &zoom.to_string()),
+            ];
+            self.write_tag_open("diagram", diag_attrs)?;
+
+            // Widgets section
+            self.write_tag_open("widgets", &[])?;
+            for (_uml_id, node) in &diagram.nodes {
+                let xmi_id = self
+                    .id_map
+                    .get(&node.model_element_id)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+                let widget_type = self.guess_widget_type(model, node.model_element_id);
+                let x = node.bounds.x() as i64;
+                let y = node.bounds.y() as i64;
+                let width = node.bounds.width() as i64;
+                let height = node.bounds.height() as i64;
+
+                self.write_empty_tag(
+                    widget_type,
+                    &[
+                        ("xmi.id", &xmi_id),
+                        ("x", &x.to_string()),
+                        ("y", &y.to_string()),
+                        ("width", &width.to_string()),
+                        ("height", &height.to_string()),
+                    ],
+                )?;
+            }
+            self.write_tag_close("widgets")?;
+
+            // Messages section (empty for now)
+            self.write_tag_open("messages", &[])?;
+            self.write_tag_close("messages")?;
+
+            // Associations section
+            self.write_tag_open("associations", &[])?;
+            for (edge_id, edge) in &diagram.edges {
+                self.write_assoc_widget(edge_id, edge, model)?;
+            }
+            self.write_tag_close("associations")?;
+
+            self.write_tag_close("diagram")?;
+        }
+
+        self.write_tag_close("diagrams")?;
+        Ok(())
+    }
+
+    /// Write a single `<assocwidget>` element including its `<linepath>`.
+    fn write_assoc_widget(
+        &mut self,
+        _edge_id: &uml_core::EdgeId,
+        edge: &uml_core::ViewEdge,
+        model: &UmlModel,
+    ) -> Result<(), XmiWriteError> {
+        let assoc_xmi_id = self.gen_sub_id();
+
+        // Look up widget XMI IDs for the source and target
+        let widget_a = self
+            .id_map
+            .get(&edge.source_node_id)
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+        let widget_b = self
+            .id_map
+            .get(&edge.target_node_id)
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Map AssociationType to C++ enum value
+        let cpp_type = self.assoc_type_to_cpp(edge.relationship_id, model);
+
+        let attrs: &[(&str, &str)] = &[
+            ("xmi.id", &assoc_xmi_id),
+            ("widgetaid", &widget_a),
+            ("widgetbid", &widget_b),
+            ("type", &cpp_type.to_string()),
+        ];
+        self.write_tag_open("assocwidget", attrs)?;
+
+        // Write linepath
+        self.write_tag_open("linepath", &[])?;
+
+        // Start point
+        if let Some(start) = edge.waypoints.first() {
+            let start_attrs: &[(&str, &str)] = &[
+                ("startx", &(start.x as i64).to_string()),
+                ("starty", &(start.y as i64).to_string()),
+            ];
+            self.write_empty_tag("startpoint", start_attrs)?;
+        } else {
+            self.write_empty_tag("startpoint", &[("startx", "0"), ("starty", "0")])?;
+        }
+
+        // End point
+        if let Some(end) = edge.waypoints.last() {
+            let end_attrs: &[(&str, &str)] = &[
+                ("endx", &(end.x as i64).to_string()),
+                ("endy", &(end.y as i64).to_string()),
+            ];
+            self.write_empty_tag("endpoint", end_attrs)?;
+        } else {
+            self.write_empty_tag("endpoint", &[("endx", "0"), ("endy", "0")])?;
+        }
+
+        self.write_tag_close("linepath")?;
+        self.write_tag_close("assocwidget")?;
+
+        Ok(())
+    }
+
+    /// Map an AssociationType (via relationship) to a C++ enum value (500+).
+    fn assoc_type_to_cpp(&self, rel_id: UmlId, model: &UmlModel) -> i32 {
+        if let Some(ModelElement::Relationship(rel)) = model.get(rel_id) {
+            return Self::cpp_assoc_type_val(rel.kind);
+        }
+        // Default to Association (503)
+        503
+    }
+
+    /// Map a Rust AssociationType to the C++ numeric value.
+    fn cpp_assoc_type_val(kind: AssociationType) -> i32 {
+        match kind {
+            AssociationType::Generalization => 500,
+            AssociationType::Aggregation => 501,
+            AssociationType::Dependency => 502,
+            AssociationType::Association => 503,
+            AssociationType::Composition => 510,
+            AssociationType::Realization => 511,
+        }
+    }
+
+    /// Compute bounding box and zoom for a diagram based on its nodes.
+    fn compute_diagram_bounds(&self, diagram: &uml_core::Diagram) -> (i32, i32, i32) {
+        let mut max_x: f64 = 0.0;
+        let mut max_y: f64 = 0.0;
+        for (_id, node) in &diagram.nodes {
+            let right = node.bounds.x() + node.bounds.width();
+            let bottom = node.bounds.y() + node.bounds.height();
+            if right > max_x {
+                max_x = right;
+            }
+            if bottom > max_y {
+                max_y = bottom;
+            }
+        }
+        // Add padding
+        let height = (max_y + 100.0).max(600.0) as i32;
+        let width = (max_x + 100.0).max(800.0) as i32;
+        (height, width, 100) // zoom = 100%
+    }
+
+    /// Guess the widget type name based on the model element type.
+    fn guess_widget_type(&self, model: &UmlModel, element_id: UmlId) -> &'static str {
+        if let Some(elem) = model.get(element_id) {
+            return match elem {
+                ModelElement::Package(_) => "packagewidget",
+                ModelElement::Class(_) => "classwidget",
+                ModelElement::Interface(_) => "interfacewidget",
+                ModelElement::Enum(_) => "enumwidget",
+                ModelElement::Datatype(_) => "datatypewidget",
+                ModelElement::Relationship(_) => "classwidget", // fallback
+            };
+        }
+        "classwidget"
+    }
+
+    // ─── XML helper methods ────────────────────────────────────────────
+
+    /// Write an empty (self-closing) tag with the given attributes.
+    fn write_empty_tag(
+        &mut self,
+        tag_name: &str,
+        attrs: &[(&str, &str)],
+    ) -> Result<(), XmiWriteError> {
+        let mut tag = BytesStart::new(tag_name);
+        for (key, value) in attrs {
+            tag.push_attribute((*key, *value));
+        }
+        self.writer.write_event(Event::Empty(tag))?;
+        Ok(())
+    }
+
+    /// Write a start tag with the given attributes.
+    fn write_tag_open(
+        &mut self,
+        tag_name: &str,
+        attrs: &[(&str, &str)],
+    ) -> Result<(), XmiWriteError> {
+        let mut tag = BytesStart::new(tag_name);
+        for (key, value) in attrs {
+            tag.push_attribute((*key, *value));
+        }
+        self.writer.write_event(Event::Start(tag))?;
+        Ok(())
+    }
+
+    /// Write an end tag.
+    fn write_tag_close(&mut self, tag_name: &str) -> Result<(), XmiWriteError> {
+        self.writer
+            .write_event(Event::End(BytesEnd::new(tag_name)))?;
         Ok(())
     }
 }

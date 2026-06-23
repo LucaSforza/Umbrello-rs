@@ -93,6 +93,10 @@ fn parse_all_cpp_test_files() {
     let mut total_relationships = 0;
     let mut total_attrs = 0usize;
     let mut total_ops = 0usize;
+    let mut total_diagrams = 0usize;
+    let mut total_diagram_nodes = 0usize;
+    let mut total_diagram_edges = 0usize;
+    let mut files_with_diagrams = 0usize;
 
     for path in &xmi_files {
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -124,14 +128,30 @@ fn parse_all_cpp_test_files() {
                             total_ops += n_ops;
                             total_relationships += n_rels;
 
+                            // Count diagrams
+                            let n_diagrams = model.diagrams().len();
+                            let n_diag_nodes: usize =
+                                model.diagrams().iter().map(|d| d.node_count()).sum();
+                            let n_diag_edges: usize =
+                                model.diagrams().iter().map(|d| d.edge_count()).sum();
+                            total_diagrams += n_diagrams;
+                            total_diagram_nodes += n_diag_nodes;
+                            total_diagram_edges += n_diag_edges;
+                            if n_diagrams > 0 {
+                                files_with_diagrams += 1;
+                            }
+
                             eprintln!(
-                                "OK  {} — {} structural elements, {} total, {} rels, {} attrs, {} ops",
+                                "OK  {} — {} structural elements, {} total, {} rels, {} attrs, {} ops, {} diag(s), {} nodes, {} edges",
                                 file_name,
                                 count,
                                 model.len(),
                                 n_rels,
                                 n_attrs,
                                 n_ops,
+                                n_diagrams,
+                                n_diag_nodes,
+                                n_diag_edges,
                             );
                             parsed_count += 1;
                             total_elements += model.len();
@@ -160,13 +180,17 @@ fn parse_all_cpp_test_files() {
     }
 
     eprintln!(
-        "\nResults: {}/{} files parsed successfully ({} total elements, {} relationships, {} attributes, {} operations)",
+        "\nResults: {}/{} files parsed successfully ({} total elements, {} relationships, {} attributes, {} operations, {} diagrams, {} nodes, {} edges across {} files with diagrams)",
         parsed_count,
         xmi_files.len(),
         total_elements,
         total_relationships,
         total_attrs,
         total_ops,
+        total_diagrams,
+        total_diagram_nodes,
+        total_diagram_edges,
+        files_with_diagrams,
     );
 
     assert!(
