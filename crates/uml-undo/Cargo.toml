@@ -1,0 +1,12 @@
+[package]
+name = "uml-undo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Command-pattern undo/redo system for model mutations"
+
+[dependencies]
+uml-core = { path = "../uml-core" }
+thiserror.workspace = true
+tracing.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "uml-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Diagram image export — SVG, PNG, PDF output"
+
+[dependencies]
+uml-render = { path = "../uml-render" }
+tracing.workspace = true
+thiserror.workspace = true
+
+[features]
+default = ["svg-export", "png-export"]
+svg-export = []
+png-export = []
+pdf-export = []

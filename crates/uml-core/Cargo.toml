@@ -1,0 +1,19 @@
+[package]
+name = "uml-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure UML domain model — types, enums, identity, arena-based repository"
+
+[dependencies]
+uml-common = { path = "../uml-common" }
+slotmap.workspace = true
+uuid.workspace = true
+bitflags.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json = "1"

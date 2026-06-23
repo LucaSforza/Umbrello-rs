@@ -1,0 +1,12 @@
+[package]
+name = "uml-import-java"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Java code import for Umbrello-RS (tree-sitter based)"
+
+[dependencies]
+uml-import = { path = "../uml-import" }
+uml-core = { path = "../uml-core" }
+tracing.workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "uml-xmi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "XMI 1.2 and 2.1 serialization for Umbrello model files"
+
+[dependencies]
+uml-core = { path = "../uml-core" }
+quick-xml.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+default = ["xmi-v1", "xmi-v2"]
+xmi-v1 = []
+xmi-v2 = []

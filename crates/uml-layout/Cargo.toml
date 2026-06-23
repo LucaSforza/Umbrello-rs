@@ -1,0 +1,20 @@
+[package]
+name = "uml-layout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Layout algorithms — grid snapping, alignment, auto-layout"
+
+[dependencies]
+uml-diagram = { path = "../uml-diagram" }
+tracing.workspace = true
+
+[features]
+default = ["auto-layout"]
+auto-layout = ["petgraph"]
+petgraph = ["dep:petgraph"]
+
+[dependencies.petgraph]
+workspace = true
+optional = true

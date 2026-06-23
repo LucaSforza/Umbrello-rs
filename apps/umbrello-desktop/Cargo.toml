@@ -1,0 +1,19 @@
+[package]
+name = "umbrello-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Umbrello desktop GUI application"
+
+[[bin]]
+name = "umbrello-desktop"
+path = "src/main.rs"
+
+[dependencies]
+uml-core = { path = "../../crates/uml-core" }
+uml-diagram = { path = "../../crates/uml-diagram" }
+uml-common = { path = "../../crates/uml-common" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

@@ -18,5 +18,5 @@ Thumbs.db
 *.so
 *.dylib
 
-# Cargo lock (binary targets)
-# Cargo.lock is committed for applications per Rust convention
+# Cargo lock
+# Cargo.lock IS committed because the workspace contains binary targets (uml-cli, umbrello-desktop)

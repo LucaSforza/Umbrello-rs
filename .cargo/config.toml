@@ -1,0 +1,9 @@
+[build]
+# Enable sparse index for faster dependency resolution
+# rustflags = ["-C", "target-cpu=native"]
+
+[alias]
+xtask = "run --package xtask --"
+
+[registries.crates-io]
+protocol = "sparse"

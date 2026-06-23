@@ -1,0 +1,12 @@
+[package]
+name = "uml-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Diagram rendering — GPU canvas, widget painting, text layout"
+
+[dependencies]
+uml-diagram = { path = "../uml-diagram" }
+uml-core = { path = "../uml-core" }
+tracing.workspace = true

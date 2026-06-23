@@ -1,0 +1,84 @@
+[workspace]
+resolver = "2"
+members = [
+    "xtask",
+
+    # Foundation (Tier 0)
+    "crates/uml-common",
+    "crates/uml-core",
+
+    # Infrastructure (Tier 1)
+    "crates/uml-xmi",
+    "crates/uml-persistence",
+    "crates/uml-undo",
+    "crates/uml-diagram",
+
+    # Rendering (Tier 2)
+    "crates/uml-layout",
+    "crates/uml-render",
+    "crates/uml-export",
+
+    # Code generation framework + plugins (Tier 2)
+    "crates/uml-codegen",
+    "crates/uml-codegen-cpp",
+    "crates/uml-codegen-java",
+    "crates/uml-codegen-python",
+    "crates/uml-codegen-rust",
+
+    # Code import framework + plugins (Tier 2)
+    "crates/uml-import",
+    "crates/uml-import-cpp",
+    "crates/uml-import-java",
+    "crates/uml-import-python",
+
+    # Applications (Tier 3)
+    "apps/uml-cli",
+    "apps/umbrello-desktop",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/umbrello-rs/umbrello-rs"
+authors = ["The Umbrello Team"]
+
+[workspace.dependencies]
+# Core dependencies
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Data structures
+slotmap = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+bitflags = "2"
+
+# XML/XMI
+quick-xml = "0.37"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Traits
+async-trait = "0.1"
+
+# Graph/algorithm
+petgraph = "0.7"
+
+# Parsing
+tree-sitter = "0.25"
+
+# Compression
+flate2 = "1"
+tar = "0.4"
+bzip2 = "0.5"
+zip = "0.5"
+
+# Error handling
+anyhow = "1"

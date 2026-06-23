@@ -1,0 +1,12 @@
+[package]
+name = "uml-codegen-rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Rust code generator for Umbrello-RS"
+
+[dependencies]
+uml-codegen = { path = "../uml-codegen" }
+uml-core = { path = "../uml-core" }
+tracing.workspace = true
