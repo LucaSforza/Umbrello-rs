@@ -1,21 +1,14 @@
-//! `CodeWriter` helper for indentation-aware code generation.
+//! CodeWriter helper for indentation-aware code generation.
 
-/// Helper for producing indented source code output.
-///
-/// Manages indentation depth and provides convenience methods for writing
-/// lines with proper indentation.
-#[derive(Debug, Default)]
+/// Indentation-aware code writer.
 pub struct CodeWriter {
-    /// The accumulated output text.
     content: String,
-    /// Current indentation level (number of indent strings).
     indent_level: usize,
-    /// The indent string (e.g., four spaces or tab).
     indent_string: &'static str,
 }
 
 impl CodeWriter {
-    /// Create a new code writer with the given indent string.
+    /// Create a new `CodeWriter` with the given indent string.
     #[must_use]
     pub fn new(indent_string: &'static str) -> Self {
         Self {
@@ -25,25 +18,24 @@ impl CodeWriter {
         }
     }
 
-    /// Increase indentation level.
+    /// Increase the indent level by one.
     pub fn indent(&mut self) {
         self.indent_level += 1;
     }
 
-    /// Decrease indentation level.
+    /// Decrease the indent level by one (no-op if at zero).
     pub fn dedent(&mut self) {
         if self.indent_level > 0 {
             self.indent_level -= 1;
         }
     }
 
-    /// Get the current indentation string.
-    #[must_use]
+    /// Return the current indent string.
     fn current_indent(&self) -> String {
         self.indent_string.repeat(self.indent_level)
     }
 
-    /// Write a line with current indentation, followed by a newline.
+    /// Write a line (indentation + content + newline).
     pub fn writeln(&mut self, line: &str) {
         self.content.push_str(&self.current_indent());
         self.content.push_str(line);
@@ -55,9 +47,15 @@ impl CodeWriter {
         self.content.push('\n');
     }
 
-    /// Consume the writer and return the generated source code.
+    /// Consume the writer and return the accumulated string.
     #[must_use]
     pub fn into_string(self) -> String {
         self.content
+    }
+}
+
+impl Default for CodeWriter {
+    fn default() -> Self {
+        Self::new("    ")
     }
 }

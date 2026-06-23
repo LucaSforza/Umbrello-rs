@@ -60,17 +60,11 @@ fn object_type_all_variants_roundtrip() {
 fn association_type_all_variants_roundtrip() {
     for v in &[
         AssociationType::Association,
-        AssociationType::DirectedAssociation,
         AssociationType::Generalization,
         AssociationType::Realization,
         AssociationType::Aggregation,
         AssociationType::Composition,
         AssociationType::Dependency,
-        AssociationType::Anchor,
-        AssociationType::Containment,
-        AssociationType::Exception,
-        AssociationType::Category2Parent,
-        AssociationType::Child2Category,
     ] {
         roundtrip(v);
     }

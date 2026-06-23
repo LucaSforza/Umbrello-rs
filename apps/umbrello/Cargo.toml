@@ -1,0 +1,18 @@
+[package]
+name = "umbrello"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Umbrello UML modeling tool"
+
+[[bin]]
+name = "umbrello"
+path = "src/main.rs"
+
+[dependencies]
+uml-core = { path = "../../crates/uml-core" }
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

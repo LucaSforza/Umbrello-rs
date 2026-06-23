@@ -1,8 +1,8 @@
 //! Pure UML domain model for Umbrello-RS.
 //!
 //! This crate contains all UML model types, type enums, identity management,
-//! and the arena-based model repository. It has no I/O, no GUI, and no persistence
-//! knowledge — it is pure data and domain logic.
+//! the arena-based model repository, and sub-modules merged from sibling
+//! crates (XMI serialisation, undo/redo, diagram model, layout, rendering).
 //!
 //! # Crate structure
 //!
@@ -12,19 +12,32 @@
 //! - `model`  — UML model structs (future)
 //! - `repository` — Central model storage using `IndexMap<UmlId, ModelElement>` with parent index
 //! - `event`   — Model change events for undo/observer systems (future)
+//! - `common`  — Shared utilities (merged from `uml-common`)
+//! - `xmi`     — XMI serialisation (merged from `uml-xmi`)
+//! - `undo`    — Undo/redo command system (merged from `uml-undo`)
+//! - `diagram` — Diagram scene model (merged from `uml-diagram`)
+//! - `layout`  — Layout algorithms (merged from `uml-layout`)
+//! - `render`  — Rendering abstraction (merged from `uml-render`)
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms, clippy::all, clippy::pedantic)]
 #![allow(clippy::doc_markdown)]
 
+pub mod common;
+pub mod diagram;
 pub mod elements;
 pub mod event;
 pub mod id;
+pub mod layout;
 pub mod model;
+pub mod render;
 pub mod repository;
 pub mod types;
+pub mod undo;
+pub mod xmi;
 
 // Re-exports for convenient access
+pub use common::UmbrelloError;
 pub use elements::{
     Attribute, Class, ClassifierData, ElementBase, Enum, EnumLiteral, Interface, ModelElement,
     NamedElement, Operation, Package, Parameter, Relationship, TemplateParameter, TypeReference,

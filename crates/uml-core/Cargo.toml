@@ -7,7 +7,6 @@ license.workspace = true
 description = "Pure UML domain model — types, enums, identity, arena-based repository"
 
 [dependencies]
-uml-common = { path = "../uml-common" }
 indexmap.workspace = true
 uuid.workspace = true
 bitflags.workspace = true

@@ -2,38 +2,10 @@
 resolver = "2"
 members = [
     "xtask",
-
-    # Foundation (Tier 0)
-    "crates/uml-common",
     "crates/uml-core",
-
-    # Infrastructure (Tier 1)
-    "crates/uml-xmi",
-    "crates/uml-persistence",
-    "crates/uml-undo",
-    "crates/uml-diagram",
-
-    # Rendering (Tier 2)
-    "crates/uml-layout",
-    "crates/uml-render",
-    "crates/uml-export",
-
-    # Code generation framework + plugins (Tier 2)
+    "crates/uml-io",
     "crates/uml-codegen",
-    "crates/uml-codegen-cpp",
-    "crates/uml-codegen-java",
-    "crates/uml-codegen-python",
-    "crates/uml-codegen-rust",
-
-    # Code import framework + plugins (Tier 2)
-    "crates/uml-import",
-    "crates/uml-import-cpp",
-    "crates/uml-import-java",
-    "crates/uml-import-python",
-
-    # Applications (Tier 3)
-    "apps/uml-cli",
-    "apps/umbrello-desktop",
+    "apps/umbrello",
 ]
 
 [workspace.package]

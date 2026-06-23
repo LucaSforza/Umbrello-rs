@@ -163,8 +163,6 @@ impl fmt::Display for ObjectType {
 pub enum AssociationType {
     /// A plain association — the default.
     Association,
-    /// Directed association (navigable in one direction).
-    DirectedAssociation,
     /// Generalization (inheritance).
     Generalization,
     /// Interface realisation.
@@ -175,16 +173,6 @@ pub enum AssociationType {
     Composition,
     /// UML dependency.
     Dependency,
-    /// Anchor relationship (used in node diagrams).
-    Anchor,
-    /// Containment (parent-child in component diagrams).
-    Containment,
-    /// Exception relationship.
-    Exception,
-    /// Category-to-parent (EER specialisation).
-    Category2Parent,
-    /// Child-to-category (EER specialisation).
-    Child2Category,
 }
 
 impl AssociationType {
@@ -193,24 +181,12 @@ impl AssociationType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Association => "Association",
-            Self::DirectedAssociation => "Directed Association",
             Self::Generalization => "Generalization",
             Self::Realization => "Realization",
             Self::Aggregation => "Aggregation",
             Self::Composition => "Composition",
             Self::Dependency => "Dependency",
-            Self::Anchor => "Anchor",
-            Self::Containment => "Containment",
-            Self::Exception => "Exception",
-            Self::Category2Parent => "Category to Parent",
-            Self::Child2Category => "Child to Category",
         }
-    }
-
-    /// Returns `true` if this type has a visual representation on a diagram.
-    #[must_use]
-    pub fn has_visual_representation(self) -> bool {
-        !matches!(self, Self::Exception | Self::Anchor)
     }
 }
 
@@ -527,17 +503,11 @@ mod tests {
     fn test_association_type_as_str_all_variants() {
         let cases = [
             (AssociationType::Association, "Association"),
-            (AssociationType::DirectedAssociation, "Directed Association"),
             (AssociationType::Generalization, "Generalization"),
             (AssociationType::Realization, "Realization"),
             (AssociationType::Aggregation, "Aggregation"),
             (AssociationType::Composition, "Composition"),
             (AssociationType::Dependency, "Dependency"),
-            (AssociationType::Anchor, "Anchor"),
-            (AssociationType::Containment, "Containment"),
-            (AssociationType::Exception, "Exception"),
-            (AssociationType::Category2Parent, "Category to Parent"),
-            (AssociationType::Child2Category, "Child to Category"),
         ];
         for (variant, expected) in &cases {
             assert_eq!(variant.as_str(), *expected);
@@ -546,29 +516,14 @@ mod tests {
     }
 
     #[test]
-    fn test_association_type_has_visual_representation() {
-        assert!(AssociationType::Association.has_visual_representation());
-        assert!(AssociationType::Generalization.has_visual_representation());
-        assert!(AssociationType::Composition.has_visual_representation());
-        assert!(!AssociationType::Exception.has_visual_representation());
-        assert!(!AssociationType::Anchor.has_visual_representation());
-    }
-
-    #[test]
     fn test_association_type_serde_roundtrip() {
         for v in &[
             AssociationType::Association,
-            AssociationType::DirectedAssociation,
             AssociationType::Generalization,
             AssociationType::Realization,
             AssociationType::Aggregation,
             AssociationType::Composition,
             AssociationType::Dependency,
-            AssociationType::Anchor,
-            AssociationType::Containment,
-            AssociationType::Exception,
-            AssociationType::Category2Parent,
-            AssociationType::Child2Category,
         ] {
             let json = serde_json::to_string(v).expect("serialize");
             let back: AssociationType = serde_json::from_str(&json).expect("deserialize");
@@ -780,17 +735,11 @@ mod tests {
         let mut seen = HashSet::new();
         for v in &[
             AssociationType::Association,
-            AssociationType::DirectedAssociation,
             AssociationType::Generalization,
             AssociationType::Realization,
             AssociationType::Aggregation,
             AssociationType::Composition,
             AssociationType::Dependency,
-            AssociationType::Anchor,
-            AssociationType::Containment,
-            AssociationType::Exception,
-            AssociationType::Category2Parent,
-            AssociationType::Child2Category,
         ] {
             let s = serde_json::to_string(v).unwrap();
             assert!(seen.insert(s), "duplicate serde name for {v}");

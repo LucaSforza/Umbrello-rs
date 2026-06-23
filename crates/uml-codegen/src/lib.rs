@@ -1,13 +1,7 @@
 //! Code generation framework for Umbrello-RS.
 //!
-//! Defines the `CodeGenerator` trait and `GeneratorRegistry` for language
-//! code generation plugins. Each supported language is a separate crate that
-//! implements `CodeGenerator`. This eliminates the C++ factory switch-statement
-//! anti-pattern.
-
-#![forbid(unsafe_code)]
-#![warn(missing_docs, rust_2018_idioms, clippy::all, clippy::pedantic)]
-#![allow(clippy::doc_markdown)]
+//! Merged from `uml-codegen`, `uml-codegen-cpp`, `uml-codegen-java`,
+//! `uml-codegen-python`, and `uml-codegen-rust` crates.
 
 pub mod registry;
 pub mod writer;
@@ -15,46 +9,62 @@ pub mod writer;
 /// Programming languages supported for code generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ProgrammingLanguage {
-    /// Ada.
+    /// Ada
     Ada,
-    /// ActionScript.
+    /// ActionScript
     ActionScript,
-    /// C++.
+    /// C++
     Cpp,
-    /// C#.
+    /// C#
     CSharp,
-    /// D.
+    /// D
     D,
-    /// CORBA IDL.
+    /// IDL
     Idl,
-    /// Java.
+    /// Java
     Java,
-    /// JavaScript.
+    /// JavaScript
     JavaScript,
-    /// Pascal.
+    /// Pascal
     Pascal,
-    /// Perl.
+    /// Perl
     Perl,
-    /// PHP 4.
+    /// PHP 4
     Php4,
-    /// PHP 5.
+    /// PHP 5
     Php5,
-    /// Python.
+    /// Python
     Python,
-    /// Ruby.
+    /// Ruby
     Ruby,
-    /// Rust.
+    /// Rust
     Rust,
-    /// SQL (generic).
+    /// SQL
     Sql,
-    /// MySQL-specific SQL.
+    /// MySQL
     MySql,
-    /// PostgreSQL-specific SQL.
+    /// PostgreSQL
     PostgreSql,
-    /// Tcl.
+    /// Tcl
     Tcl,
-    /// Vala.
+    /// Vala
     Vala,
-    /// XML Schema.
+    /// XML Schema
     XmlSchema,
 }
+
+/// A code generator produces source files from UML model elements.
+pub trait CodeGenerator: Send + Sync {
+    /// The programming language this generator targets.
+    fn language(&self) -> ProgrammingLanguage;
+}
+
+// Re-export language-specific generators
+#[cfg(feature = "cpp")]
+pub mod cpp;
+#[cfg(feature = "java")]
+pub mod java;
+#[cfg(feature = "python")]
+pub mod python;
+#[cfg(feature = "rust")]
+pub mod rust;
