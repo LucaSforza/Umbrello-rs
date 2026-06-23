@@ -6,22 +6,38 @@
 //!   build  — Full workspace build
 //!   test   — Full workspace test
 //!   check  — Format, clippy, and deny checks
-//!   docs   — Build documentation
+//!   docs   — Build documentation (mdBook + cargo doc)
 
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 use std::process::{Command, ExitCode};
 
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
-    let cmd = args.get(1).map(String::as_str).unwrap_or("help");
+#[derive(Parser)]
+#[command(name = "xtask", about = "Umbrello-RS developer task runner")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
 
-    match cmd {
-        "build" => run_cargo(&["build", "--workspace"]),
-        "test" => run_cargo(&["test", "--workspace"]),
-        "check" => {
-            let fmt_result = run_cargo(&["fmt", "--all", "--", "--check"]);
-            if fmt_result != ExitCode::SUCCESS {
-                return fmt_result;
-            }
+#[derive(Subcommand)]
+enum Commands {
+    /// Full workspace build.
+    Build,
+    /// Run all workspace tests.
+    Test,
+    /// Run format check, clippy, and deny checks.
+    Check,
+    /// Build documentation: mdBook architecture docs + cargo doc API docs.
+    Docs,
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+
+    let result = match cli.command {
+        Some(Commands::Build) => run_cargo(&["build", "--workspace"]),
+        Some(Commands::Test) => run_cargo(&["test", "--workspace"]),
+        Some(Commands::Check) => run_cargo(&["fmt", "--all", "--", "--check"]).and_then(|_| {
             run_cargo(&[
                 "clippy",
                 "--workspace",
@@ -30,12 +46,9 @@ fn main() -> ExitCode {
                 "-D",
                 "warnings",
             ])
-        },
-        "docs" => {
-            println!("Documentation build not yet configured.");
-            ExitCode::SUCCESS
-        },
-        "help" | "--help" | "-h" => {
+        }),
+        Some(Commands::Docs) => build_docs(),
+        None => {
             println!("Usage: cargo xtask <command>");
             println!();
             println!("Commands:");
@@ -43,26 +56,70 @@ fn main() -> ExitCode {
             println!("  test    Run all workspace tests");
             println!("  check   Format + clippy + deny checks");
             println!("  docs    Build documentation");
-            ExitCode::SUCCESS
+            Ok(())
         },
-        unknown => {
-            eprintln!("Unknown command: {unknown}. Use 'cargo xtask help'.");
+    };
+
+    match result {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
             ExitCode::FAILURE
         },
     }
 }
 
-fn run_cargo(args: &[&str]) -> ExitCode {
-    let output = Command::new("cargo")
+fn run_cargo(args: &[&str]) -> Result<()> {
+    let status = Command::new("cargo")
         .args(args)
-        .output()
-        .expect("failed to execute cargo");
+        .status()
+        .context("failed to execute cargo")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("{stderr}");
-        ExitCode::from(output.status.code().unwrap_or(1) as u8)
-    } else {
-        ExitCode::SUCCESS
+    if !status.success() {
+        anyhow::bail!("cargo {} failed", args.join(" "));
     }
+    Ok(())
+}
+
+fn build_docs() -> Result<()> {
+    let mdbook_available = Command::new("mdbook")
+        .args(["--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if mdbook_available {
+        println!("==> Building mdBook architecture documentation...");
+        run_mdbook(&["build", "docs/book/"]).context("mdBook build failed")?;
+    } else {
+        eprintln!("==> Warning: mdBook not found. Skipping architecture docs.");
+        eprintln!("    Install with: cargo install mdbook");
+    }
+
+    println!("==> Building API documentation with cargo doc...");
+    run_cargo(&["doc", "--workspace", "--no-deps"])?;
+
+    if mdbook_available {
+        println!("==> Documentation built successfully.");
+        println!("    Architecture docs: target/doc-book/index.html");
+        println!("    API docs:          target/doc/uml_core/index.html");
+    } else {
+        println!("==> API documentation built successfully.");
+        println!("    API docs:          target/doc/uml_core/index.html");
+        println!("    (Architecture docs skipped — install mdBook with: cargo install mdbook)");
+    }
+
+    Ok(())
+}
+
+fn run_mdbook(args: &[&str]) -> Result<()> {
+    let status = Command::new("mdbook")
+        .args(args)
+        .status()
+        .context("failed to execute mdbook")?;
+
+    if !status.success() {
+        anyhow::bail!("mdbook {} failed", args.join(" "));
+    }
+    Ok(())
 }

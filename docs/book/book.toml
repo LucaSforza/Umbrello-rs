@@ -1,0 +1,10 @@
+[book]
+title = "Umbrello-RS Architecture Documentation"
+authors = ["The Umbrello Team"]
+src = ".."
+
+[build]
+build-dir = "../../target/doc-book"
+
+[output.html]
+no-section-label = true

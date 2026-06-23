@@ -603,7 +603,7 @@ Approximate memory per element (including container overhead, excluding the
 | Candidate | Overhead per element | Notes |
 |-----------|---------------------|-------|
 | A (HashMap) | ~32–40 bytes (hash + entry + bucket alignment) | Hashbrown table, 1–2 control bytes per entry |
-| B (IndexMap) | ~56–72 bytes (hash table + insertion-order vec entry + bucket alignment) | HashMap overhead + Vec<usize> for ordering |
+| B (IndexMap) | ~56–72 bytes (hash table + insertion-order vec entry + bucket alignment) | HashMap overhead + `Vec<usize>` for ordering |
 | C (SlotMap) | ~80–100 bytes (SlotMap entry + 2 HashMap entries for indices) | Three collections |
 | D (gen-arena) | ~72–88 bytes (arena slot + 2 HashMap entries) | Two collections |
 | E (BTreeMap) | ~32 bytes (tree node + key-value pair) | Internal nodes store child pointers |
