@@ -76,6 +76,12 @@ pub enum ObjectType {
     Association,
     /// An association role (one end of an association).
     Role,
+    /// A UML generalization (inheritance).
+    Generalization,
+    /// A UML interface realization.
+    Realization,
+    /// A UML dependency.
+    Dependency,
 
     // ── Infrastructure ───────────────────────────────────────────────
     /// A UML stereotype.
@@ -114,6 +120,9 @@ impl ObjectType {
             Self::CheckConstraint => "CheckConstraint",
             Self::Association => "Association",
             Self::Role => "Role",
+            Self::Generalization => "Generalization",
+            Self::Realization => "Realization",
+            Self::Dependency => "Dependency",
             Self::Stereotype => "Stereotype",
             Self::InstanceAttribute => "InstanceAttribute",
         }
@@ -396,6 +405,9 @@ mod tests {
             (ObjectType::CheckConstraint, "CheckConstraint"),
             (ObjectType::Association, "Association"),
             (ObjectType::Role, "Role"),
+            (ObjectType::Generalization, "Generalization"),
+            (ObjectType::Realization, "Realization"),
+            (ObjectType::Dependency, "Dependency"),
             (ObjectType::Stereotype, "Stereotype"),
             (ObjectType::InstanceAttribute, "InstanceAttribute"),
         ];
@@ -456,6 +468,9 @@ mod tests {
             ObjectType::CheckConstraint,
             ObjectType::Association,
             ObjectType::Role,
+            ObjectType::Generalization,
+            ObjectType::Realization,
+            ObjectType::Dependency,
             ObjectType::Stereotype,
             ObjectType::InstanceAttribute,
         ];
@@ -494,6 +509,9 @@ mod tests {
             ObjectType::CheckConstraint,
             ObjectType::Association,
             ObjectType::Role,
+            ObjectType::Generalization,
+            ObjectType::Realization,
+            ObjectType::Dependency,
             ObjectType::Stereotype,
             ObjectType::InstanceAttribute,
         ];
@@ -744,6 +762,9 @@ mod tests {
             ObjectType::CheckConstraint,
             ObjectType::Association,
             ObjectType::Role,
+            ObjectType::Generalization,
+            ObjectType::Realization,
+            ObjectType::Dependency,
             ObjectType::Stereotype,
             ObjectType::InstanceAttribute,
         ] {

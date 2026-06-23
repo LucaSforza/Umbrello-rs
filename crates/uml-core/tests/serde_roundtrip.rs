@@ -108,6 +108,24 @@ fn visibility_all_variants_roundtrip() {
 }
 
 #[test]
+fn relationship_all_variants_roundtrip() {
+    use uml_core::elements::Relationship;
+    use uml_core::UmlId;
+
+    for kind in &[
+        AssociationType::Generalization,
+        AssociationType::Realization,
+        AssociationType::Association,
+        AssociationType::Aggregation,
+        AssociationType::Composition,
+        AssociationType::Dependency,
+    ] {
+        let rel = Relationship::new(*kind, UmlId::new(), UmlId::new());
+        roundtrip(&rel);
+    }
+}
+
+#[test]
 fn parameter_direction_all_variants_roundtrip() {
     for v in &[
         ParameterDirection::In,

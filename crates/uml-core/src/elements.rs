@@ -9,7 +9,7 @@
 //! manual RTTI or virtual methods.
 
 use crate::id::UmlId;
-use crate::types::{ObjectType, ParameterDirection, Visibility};
+use crate::types::{AssociationType, ObjectType, ParameterDirection, Visibility};
 use serde::{Deserialize, Serialize};
 
 // ─── NamedElement trait ──────────────────────────────────────────────
@@ -390,6 +390,118 @@ impl Enum {
     }
 }
 
+// ─── Relationship ──────────────────────────────────────────────────────
+
+/// A UML relationship between two model elements.
+///
+/// Relationships are first-class model elements with their own `UmlId`,
+/// name, stereotype, and documentation. They connect a source element
+/// to a target element via `UmlId` references.
+///
+/// # UML Semantics
+///
+/// - **Generalization** — source is the subclass, target is the superclass.
+/// - **Realization** — source is the implementing class, target is the interface.
+/// - **Association** — bidirectional or unidirectional reference.
+/// - **Aggregation** — whole-part with shared lifecycle (source is whole).
+/// - **Composition** — whole-part with exclusive lifecycle (source is whole).
+/// - **Dependency** — source depends on target (uses relationship).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Relationship {
+    /// Common element metadata.
+    pub base: ElementBase,
+    /// The kind of relationship.
+    pub kind: AssociationType,
+    /// The source element (e.g., subclass in a generalization).
+    pub source_id: UmlId,
+    /// The target element (e.g., superclass in a generalization).
+    pub target_id: UmlId,
+    /// Multiplicity at the source end (e.g., "1", "0..*", "1..*").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_multiplicity: Option<String>,
+    /// Multiplicity at the target end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_multiplicity: Option<String>,
+    /// Role name at the source end (e.g., "employee").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_role_name: Option<String>,
+    /// Role name at the target end (e.g., "employer").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_role_name: Option<String>,
+    /// Whether navigation from source to target is supported.
+    #[serde(default)]
+    pub source_to_target_navigable: bool,
+    /// Whether navigation from target to source is supported.
+    #[serde(default)]
+    pub target_to_source_navigable: bool,
+}
+
+impl Relationship {
+    /// Create a new relationship.
+    #[must_use]
+    pub fn new(kind: AssociationType, source_id: UmlId, target_id: UmlId) -> Self {
+        Self {
+            base: ElementBase::new(""),
+            kind,
+            source_id,
+            target_id,
+            source_multiplicity: None,
+            target_multiplicity: None,
+            source_role_name: None,
+            target_role_name: None,
+            source_to_target_navigable: false,
+            target_to_source_navigable: false,
+        }
+    }
+
+    /// Create a generalization (subclass → superclass).
+    #[must_use]
+    pub fn new_generalization(subclass_id: UmlId, superclass_id: UmlId) -> Self {
+        Self::new(AssociationType::Generalization, subclass_id, superclass_id)
+    }
+
+    /// Create an interface realization.
+    #[must_use]
+    pub fn new_realization(class_id: UmlId, interface_id: UmlId) -> Self {
+        Self::new(AssociationType::Realization, class_id, interface_id)
+    }
+
+    /// Create a plain association.
+    #[must_use]
+    pub fn new_association(source_id: UmlId, target_id: UmlId) -> Self {
+        Self::new(AssociationType::Association, source_id, target_id)
+    }
+
+    /// Create an aggregation (source is the whole, target is the part).
+    #[must_use]
+    pub fn new_aggregation(whole_id: UmlId, part_id: UmlId) -> Self {
+        Self::new(AssociationType::Aggregation, whole_id, part_id)
+    }
+
+    /// Create a composition (source is the whole, target is the part).
+    #[must_use]
+    pub fn new_composition(whole_id: UmlId, part_id: UmlId) -> Self {
+        Self::new(AssociationType::Composition, whole_id, part_id)
+    }
+
+    /// Create a dependency.
+    #[must_use]
+    pub fn new_dependency(source_id: UmlId, target_id: UmlId) -> Self {
+        Self::new(AssociationType::Dependency, source_id, target_id)
+    }
+
+    /// The ObjectType discriminant corresponding to this relationship's kind.
+    #[must_use]
+    pub fn object_type(&self) -> ObjectType {
+        match self.kind {
+            AssociationType::Generalization => ObjectType::Generalization,
+            AssociationType::Realization => ObjectType::Realization,
+            AssociationType::Dependency => ObjectType::Dependency,
+            _ => ObjectType::Association,
+        }
+    }
+}
+
 // ─── ModelElement enum (type-safe dispatch) ─────────────────────────
 
 /// A UML model element.
@@ -407,6 +519,8 @@ pub enum ModelElement {
     Interface(Interface),
     /// A UML enumeration.
     Enum(Enum),
+    /// A UML relationship (generalization, association, aggregation, composition, dependency, realization).
+    Relationship(Relationship),
 }
 
 impl ModelElement {
@@ -418,6 +532,7 @@ impl ModelElement {
             Self::Class(_) => ObjectType::Class,
             Self::Interface(_) => ObjectType::Interface,
             Self::Enum(_) => ObjectType::Enumeration,
+            Self::Relationship(rel) => rel.object_type(),
         }
     }
 
@@ -429,6 +544,7 @@ impl ModelElement {
             Self::Class(c) => &c.base,
             Self::Interface(i) => &i.base,
             Self::Enum(e) => &e.base,
+            Self::Relationship(r) => &r.base,
         }
     }
 
@@ -439,6 +555,7 @@ impl ModelElement {
             Self::Class(c) => &mut c.base,
             Self::Interface(i) => &mut i.base,
             Self::Enum(e) => &mut e.base,
+            Self::Relationship(r) => &mut r.base,
         }
     }
 
@@ -478,7 +595,7 @@ impl ModelElement {
             Self::Class(c) => Some(&c.classifier),
             Self::Interface(i) => Some(&i.classifier),
             Self::Enum(e) => Some(&e.classifier),
-            Self::Package(_) => None,
+            Self::Package(_) | Self::Relationship(_) => None,
         }
     }
 
@@ -488,7 +605,7 @@ impl ModelElement {
             Self::Class(c) => Some(&mut c.classifier),
             Self::Interface(i) => Some(&mut i.classifier),
             Self::Enum(e) => Some(&mut e.classifier),
-            Self::Package(_) => None,
+            Self::Package(_) | Self::Relationship(_) => None,
         }
     }
 }
@@ -759,5 +876,85 @@ mod tests {
         let json = serde_json::to_string(&elem).unwrap();
         let back: ModelElement = serde_json::from_str(&json).unwrap();
         assert_eq!(elem, back);
+    }
+
+    // ── Relationship tests ───────────────────────────────────────────
+
+    #[test]
+    fn relationship_creation() {
+        let source = UmlId::new();
+        let target = UmlId::new();
+        let rel = Relationship::new(AssociationType::Generalization, source, target);
+        assert_eq!(rel.kind, AssociationType::Generalization);
+        assert_eq!(rel.source_id, source);
+        assert_eq!(rel.target_id, target);
+        assert!(rel.source_multiplicity.is_none());
+    }
+
+    #[test]
+    fn relationship_constructor_methods() {
+        let a = UmlId::new();
+        let b = UmlId::new();
+
+        let gen = Relationship::new_generalization(a, b);
+        assert_eq!(gen.kind, AssociationType::Generalization);
+
+        let real = Relationship::new_realization(a, b);
+        assert_eq!(real.kind, AssociationType::Realization);
+
+        let assoc = Relationship::new_association(a, b);
+        assert_eq!(assoc.kind, AssociationType::Association);
+
+        let agg = Relationship::new_aggregation(a, b);
+        assert_eq!(agg.kind, AssociationType::Aggregation);
+
+        let comp = Relationship::new_composition(a, b);
+        assert_eq!(comp.kind, AssociationType::Composition);
+
+        let dep = Relationship::new_dependency(a, b);
+        assert_eq!(dep.kind, AssociationType::Dependency);
+    }
+
+    #[test]
+    fn relationship_object_type() {
+        assert_eq!(
+            Relationship::new_generalization(UmlId::new(), UmlId::new()).object_type(),
+            ObjectType::Generalization
+        );
+        assert_eq!(
+            Relationship::new_realization(UmlId::new(), UmlId::new()).object_type(),
+            ObjectType::Realization
+        );
+        assert_eq!(
+            Relationship::new_dependency(UmlId::new(), UmlId::new()).object_type(),
+            ObjectType::Dependency
+        );
+        assert_eq!(
+            Relationship::new_association(UmlId::new(), UmlId::new()).object_type(),
+            ObjectType::Association
+        );
+    }
+
+    #[test]
+    fn model_element_relationship_object_type() {
+        let rel = Relationship::new_generalization(UmlId::new(), UmlId::new());
+        let elem = ModelElement::Relationship(rel);
+        assert_eq!(elem.object_type(), ObjectType::Generalization);
+        assert!(elem.classifier_data().is_none());
+        assert!(!elem.is_classifier());
+        assert!(!elem.is_package());
+    }
+
+    #[test]
+    fn serde_roundtrip_relationship() {
+        let mut rel = Relationship::new_generalization(UmlId::new(), UmlId::new());
+        rel.source_multiplicity = Some("1".into());
+        rel.target_multiplicity = Some("0..*".into());
+        rel.source_role_name = Some("parent".into());
+        rel.target_role_name = Some("child".into());
+
+        let json = serde_json::to_string(&rel).unwrap();
+        let back: Relationship = serde_json::from_str(&json).unwrap();
+        assert_eq!(rel, back);
     }
 }

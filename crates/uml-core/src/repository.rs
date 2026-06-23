@@ -8,8 +8,9 @@ use std::collections::HashMap;
 
 use indexmap::IndexMap;
 
-use crate::elements::{ClassifierData, ModelElement};
+use crate::elements::{ClassifierData, ModelElement, Relationship};
 use crate::id::UmlId;
+use crate::types::AssociationType;
 
 /// Central storage for all UML model elements.
 ///
@@ -92,6 +93,10 @@ pub enum ReferenceField {
     ParameterType,
     /// In an ElementBase's stereotype_id.
     Stereotype,
+    /// In a Relationship's source_id.
+    RelationshipSource,
+    /// In a Relationship's target_id.
+    RelationshipTarget,
 }
 
 impl UmlModel {
@@ -123,6 +128,23 @@ impl UmlModel {
     ///
     /// Returns the element if it existed.
     pub fn remove(&mut self, id: UmlId) -> Option<ModelElement> {
+        // 0. Remove all relationships where this element is source or target
+        let rel_ids: Vec<UmlId> = self
+            .elements
+            .iter()
+            .filter(|(_, elem)| {
+                if let ModelElement::Relationship(rel) = elem {
+                    rel.source_id == id || rel.target_id == id
+                } else {
+                    false
+                }
+            })
+            .map(|(&rid, _)| rid)
+            .collect();
+        for rid in rel_ids {
+            self.elements.shift_remove(&rid);
+        }
+
         // 1. Get the parent packages (if any) before removing from parent_index
         let parent_ids: Vec<UmlId> = self.parent_index.remove(&id).unwrap_or_default();
 
@@ -335,6 +357,22 @@ impl UmlModel {
                 ModelElement::Enum(enm) => {
                     self.validate_classifier_references(id, &enm.classifier, &mut errors);
                 },
+                ModelElement::Relationship(rel) => {
+                    if !self.contains(rel.source_id) {
+                        errors.push(ReferenceError {
+                            source_id: id,
+                            field: ReferenceField::RelationshipSource,
+                            target_id: rel.source_id,
+                        });
+                    }
+                    if !self.contains(rel.target_id) {
+                        errors.push(ReferenceError {
+                            source_id: id,
+                            field: ReferenceField::RelationshipTarget,
+                            target_id: rel.target_id,
+                        });
+                    }
+                },
             }
 
             // Validate stereotype reference
@@ -424,6 +462,44 @@ impl UmlModel {
 
         false
     }
+
+    /// Find all relationships where the given element participates
+    /// (as either source or target).
+    #[must_use]
+    pub fn relationships_of(&self, element_id: UmlId) -> Vec<&Relationship> {
+        self.elements
+            .iter()
+            .filter_map(|(_, elem)| {
+                if let ModelElement::Relationship(rel) = elem {
+                    if rel.source_id == element_id || rel.target_id == element_id {
+                        Some(rel)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Find all generalizations where the given element is the subclass (source).
+    #[must_use]
+    pub fn generalizations_of(&self, element_id: UmlId) -> Vec<&Relationship> {
+        self.relationships_of(element_id)
+            .into_iter()
+            .filter(|r| r.kind == AssociationType::Generalization && r.source_id == element_id)
+            .collect()
+    }
+
+    /// Find all realizations where the given element is the implementing class (source).
+    #[must_use]
+    pub fn realizations_of(&self, element_id: UmlId) -> Vec<&Relationship> {
+        self.relationships_of(element_id)
+            .into_iter()
+            .filter(|r| r.kind == AssociationType::Realization && r.source_id == element_id)
+            .collect()
+    }
 }
 
 impl Default for UmlModel {
@@ -437,8 +513,12 @@ impl Default for UmlModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{Attribute, Class, ClassifierData, ElementBase, Package};
-    use crate::types::Visibility;
+    use crate::elements::{Attribute, Class, ClassifierData, ElementBase, Package, Relationship};
+    use crate::types::{AssociationType, Visibility};
+
+    fn make_interface(name: &str) -> ModelElement {
+        ModelElement::Interface(crate::elements::Interface::new(name))
+    }
 
     fn make_package(name: &str) -> ModelElement {
         ModelElement::Package(Package::new(name))
@@ -860,5 +940,231 @@ mod tests {
         let clone = model.clone();
         assert_eq!(clone.len(), 2);
         assert!(clone.contains(model.iter().next().unwrap().0));
+    }
+
+    // ── Relationship tests ───────────────────────────────────────────
+
+    #[test]
+    fn insert_and_get_relationship() {
+        let mut model = UmlModel::new();
+        let class_a = make_class("A");
+        let class_b = make_class("B");
+        let a_id = class_a.id();
+        let b_id = class_b.id();
+        model.insert(class_a);
+        model.insert(class_b);
+
+        let rel = Relationship::new_generalization(a_id, b_id);
+        let rel_id = rel.base.id;
+        let old = model.insert(ModelElement::Relationship(rel));
+        assert!(old.is_none());
+
+        let retrieved = model.get(rel_id).unwrap();
+        assert!(matches!(retrieved, ModelElement::Relationship(_)));
+    }
+
+    #[test]
+    fn relationships_of_returns_participating() {
+        let mut model = UmlModel::new();
+        let a_elem = make_class("A");
+        let a_id = a_elem.id();
+        model.insert(a_elem);
+        let b_elem = make_class("B");
+        let b_id = b_elem.id();
+        model.insert(b_elem);
+        let c_elem = make_class("C");
+        let c_id = c_elem.id();
+        model.insert(c_elem);
+
+        let rel_ab = Relationship::new_generalization(a_id, b_id);
+        model.insert(ModelElement::Relationship(rel_ab));
+
+        let rels_a: Vec<_> = model.relationships_of(a_id);
+        assert_eq!(rels_a.len(), 1);
+        assert_eq!(rels_a[0].kind, AssociationType::Generalization);
+
+        let rels_b: Vec<_> = model.relationships_of(b_id);
+        assert_eq!(rels_b.len(), 1);
+
+        let rels_c: Vec<_> = model.relationships_of(c_id);
+        assert_eq!(rels_c.len(), 0);
+    }
+
+    #[test]
+    fn generalizations_of_filters_correctly() {
+        let mut model = UmlModel::new();
+        let sub_elem = make_class("Sub");
+        let sub_id = sub_elem.id();
+        model.insert(sub_elem);
+        let super_elem = make_class("Super");
+        let super_id = super_elem.id();
+        model.insert(super_elem);
+        let other_elem = make_class("Other");
+        let other_id = other_elem.id();
+        model.insert(other_elem);
+
+        // Generalization: Sub → Super
+        model
+            .insert(ModelElement::Relationship(Relationship::new_generalization(sub_id, super_id)));
+        // Association: Sub → Other (should not appear in generalizations_of)
+        model.insert(ModelElement::Relationship(Relationship::new_association(sub_id, other_id)));
+
+        let gens = model.generalizations_of(sub_id);
+        assert_eq!(gens.len(), 1);
+        assert_eq!(gens[0].target_id, super_id);
+    }
+
+    #[test]
+    fn realizations_of_filters_correctly() {
+        let mut model = UmlModel::new();
+        let cls_elem = make_class("Impl");
+        let cls_id = cls_elem.id();
+        model.insert(cls_elem);
+        let iface_elem = make_interface("MyIface");
+        let iface_id = iface_elem.id();
+        model.insert(iface_elem);
+
+        model.insert(ModelElement::Relationship(Relationship::new_realization(cls_id, iface_id)));
+
+        let reals = model.realizations_of(cls_id);
+        assert_eq!(reals.len(), 1);
+        assert_eq!(reals[0].target_id, iface_id);
+    }
+
+    #[test]
+    fn remove_class_cascades_to_relationships() {
+        let mut model = UmlModel::new();
+        let a_elem = make_class("A");
+        let a_id = a_elem.id();
+        model.insert(a_elem);
+        let b_elem = make_class("B");
+        let b_id = b_elem.id();
+        model.insert(b_elem);
+        let rel_elem = ModelElement::Relationship(Relationship::new_generalization(a_id, b_id));
+        let rel_id = rel_elem.id();
+        model.insert(rel_elem);
+
+        assert_eq!(model.len(), 3);
+
+        // Remove class A — should cascade-delete the relationship A→B
+        model.remove(a_id);
+
+        assert_eq!(model.len(), 1); // only B remains
+        assert!(!model.contains(a_id));
+        assert!(!model.contains(rel_id));
+        assert!(model.contains(b_id));
+    }
+
+    #[test]
+    fn remove_target_cascades_to_relationships() {
+        let mut model = UmlModel::new();
+        let a_elem = make_class("A");
+        let a_id = a_elem.id();
+        model.insert(a_elem);
+        let b_elem = make_class("B");
+        let b_id = b_elem.id();
+        model.insert(b_elem);
+        let rel_elem = ModelElement::Relationship(Relationship::new_generalization(a_id, b_id));
+        let rel_id = rel_elem.id();
+        model.insert(rel_elem);
+
+        // Remove class B (the target) — should cascade-delete the relationship
+        model.remove(b_id);
+
+        assert_eq!(model.len(), 1); // only A remains
+        assert!(!model.contains(rel_id));
+        assert!(model.contains(a_id));
+    }
+
+    #[test]
+    fn validate_references_dangling_relationship_source() {
+        let mut model = UmlModel::new();
+        let cls_elem = make_class("A");
+        let cls_id = cls_elem.id();
+        model.insert(cls_elem);
+        let dangling = UmlId::new();
+
+        let rel = Relationship {
+            base: ElementBase::new(""),
+            kind: AssociationType::Generalization,
+            source_id: dangling, // dangling
+            target_id: cls_id,
+            source_multiplicity: None,
+            target_multiplicity: None,
+            source_role_name: None,
+            target_role_name: None,
+            source_to_target_navigable: false,
+            target_to_source_navigable: false,
+        };
+        model.insert(ModelElement::Relationship(rel));
+
+        let errors = model.validate_references();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].field, ReferenceField::RelationshipSource);
+        assert_eq!(errors[0].target_id, dangling);
+    }
+
+    #[test]
+    fn validate_references_dangling_relationship_target() {
+        let mut model = UmlModel::new();
+        let cls_elem = make_class("A");
+        let cls_id = cls_elem.id();
+        model.insert(cls_elem);
+        let dangling = UmlId::new();
+
+        let rel = Relationship {
+            base: ElementBase::new(""),
+            kind: AssociationType::Generalization,
+            source_id: cls_id,
+            target_id: dangling, // dangling
+            source_multiplicity: None,
+            target_multiplicity: None,
+            source_role_name: None,
+            target_role_name: None,
+            source_to_target_navigable: false,
+            target_to_source_navigable: false,
+        };
+        model.insert(ModelElement::Relationship(rel));
+
+        let errors = model.validate_references();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].field, ReferenceField::RelationshipTarget);
+    }
+
+    #[test]
+    fn self_relationship() {
+        let mut model = UmlModel::new();
+        let cls_elem = make_class("SelfRef");
+        let cls_id = cls_elem.id();
+        model.insert(cls_elem);
+        let rel_elem = ModelElement::Relationship(
+            Relationship::new_association(cls_id, cls_id), // self-reference
+        );
+        let rel_id = rel_elem.id();
+        model.insert(rel_elem);
+
+        assert!(model.contains(rel_id));
+        assert_eq!(model.relationships_of(cls_id).len(), 1);
+
+        let errors = model.validate_references();
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn multiple_relationships_between_same_elements() {
+        let mut model = UmlModel::new();
+        let a_elem = make_class("A");
+        let a_id = a_elem.id();
+        model.insert(a_elem);
+        let b_elem = make_class("B");
+        let b_id = b_elem.id();
+        model.insert(b_elem);
+
+        model.insert(ModelElement::Relationship(Relationship::new_generalization(a_id, b_id)));
+        model.insert(ModelElement::Relationship(Relationship::new_association(a_id, b_id)));
+        model.insert(ModelElement::Relationship(Relationship::new_dependency(a_id, b_id)));
+
+        assert_eq!(model.relationships_of(a_id).len(), 3);
+        assert_eq!(model.relationships_of(b_id).len(), 3);
     }
 }
