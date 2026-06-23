@@ -22,4 +22,6 @@ pub mod model;
 pub mod repository;
 pub mod types;
 
-// No re-exports yet — types will be added when implemented in Phase 1
+// Re-exports for convenient access
+pub use id::UmlId;
+pub use types::{AssociationType, DiagramType, ObjectType, ParameterDirection, Visibility};
