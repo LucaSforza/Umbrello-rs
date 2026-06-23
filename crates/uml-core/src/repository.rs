@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use indexmap::IndexMap;
 
+use crate::diagram::{Diagram, DiagramId};
 use crate::elements::{ClassifierData, ModelElement, Relationship};
 use crate::id::UmlId;
 use crate::types::AssociationType;
@@ -37,6 +38,8 @@ pub struct UmlModel {
     /// Reverse index: element_id → set of package_ids that contain it.
     /// Maintained automatically by add_to_package / remove_from_package.
     parent_index: HashMap<UmlId, Vec<UmlId>>,
+    /// All diagrams in this model.
+    diagrams: Vec<Diagram>,
 }
 
 /// Errors that can occur during model operations.
@@ -106,6 +109,7 @@ impl UmlModel {
         Self {
             elements: IndexMap::new(),
             parent_index: HashMap::new(),
+            diagrams: Vec::new(),
         }
     }
 
@@ -507,6 +511,37 @@ impl UmlModel {
             .into_iter()
             .filter(|r| r.kind == AssociationType::Realization && r.source_id == element_id)
             .collect()
+    }
+
+    /// Add a diagram to the model.
+    pub fn add_diagram(&mut self, diagram: Diagram) {
+        self.diagrams.push(diagram);
+    }
+
+    /// Remove a diagram by ID. Returns the diagram if found.
+    pub fn remove_diagram(&mut self, diagram_id: DiagramId) -> Option<Diagram> {
+        if let Some(pos) = self.diagrams.iter().position(|d| d.id == diagram_id) {
+            Some(self.diagrams.remove(pos))
+        } else {
+            None
+        }
+    }
+
+    /// Get a reference to a diagram by ID.
+    #[must_use]
+    pub fn get_diagram(&self, diagram_id: DiagramId) -> Option<&Diagram> {
+        self.diagrams.iter().find(|d| d.id == diagram_id)
+    }
+
+    /// Get a mutable reference to a diagram by ID.
+    pub fn get_diagram_mut(&mut self, diagram_id: DiagramId) -> Option<&mut Diagram> {
+        self.diagrams.iter_mut().find(|d| d.id == diagram_id)
+    }
+
+    /// All diagrams in the model.
+    #[must_use]
+    pub fn diagrams(&self) -> &[Diagram] {
+        &self.diagrams
     }
 }
 

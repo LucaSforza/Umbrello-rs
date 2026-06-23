@@ -227,6 +227,251 @@ impl Command for MoveElement {
     }
 }
 
+// ─── Diagram visual commands ─────────────────────────────────────
+
+use crate::diagram::{DiagramId, Point, Rect, Size, ViewNode};
+
+/// Command to add a node to a diagram.
+#[derive(Debug)]
+pub struct AddNodeToDiagram {
+    diagram_id: DiagramId,
+    element_id: UmlId,
+    position: Point,
+    size: Size,
+    description: String,
+}
+
+impl AddNodeToDiagram {
+    /// Create a command to add a node to a diagram.
+    #[must_use]
+    pub fn new(diagram_id: DiagramId, element_id: UmlId, position: Point, size: Size) -> Self {
+        Self {
+            diagram_id,
+            element_id,
+            position,
+            size,
+            description: "Add node to diagram".to_string(),
+        }
+    }
+}
+
+impl Command for AddNodeToDiagram {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let d = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        d.add_node(
+            self.element_id,
+            ViewNode::new(
+                self.element_id,
+                Rect::new(self.position.x, self.position.y, self.size.width, self.size.height),
+            ),
+        );
+        Ok(())
+    }
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let d = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        d.remove_node(self.element_id);
+        Ok(())
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+/// Command to remove a node from a diagram.
+#[derive(Debug)]
+pub struct RemoveNodeFromDiagram {
+    diagram_id: DiagramId,
+    element_id: UmlId,
+    removed_node: Option<ViewNode>,
+    description: String,
+}
+
+impl RemoveNodeFromDiagram {
+    /// Create a command to remove a node from a diagram.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommandError::ElementNotFound` if the node does not exist
+    /// or `CommandError::InvalidOperation` if the diagram is not found.
+    pub fn new(
+        model: &UmlModel,
+        diagram_id: DiagramId,
+        element_id: UmlId,
+    ) -> Result<Self, CommandError> {
+        let d = model
+            .get_diagram(diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        d.get_node(element_id)
+            .ok_or(CommandError::ElementNotFound(element_id))?;
+        Ok(Self {
+            diagram_id,
+            element_id,
+            removed_node: None,
+            description: "Remove node from diagram".to_string(),
+        })
+    }
+}
+
+impl Command for RemoveNodeFromDiagram {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let d = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        self.removed_node = d.remove_node(self.element_id);
+        Ok(())
+    }
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let d = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        if let Some(node) = self.removed_node.take() {
+            d.add_node(self.element_id, node);
+        }
+        Ok(())
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+/// Command to move a node on a diagram.
+#[derive(Debug)]
+pub struct MoveNode {
+    diagram_id: DiagramId,
+    element_id: UmlId,
+    old_position: Option<Point>,
+    new_position: Point,
+    description: String,
+}
+
+impl MoveNode {
+    /// Create a command to move a node on a diagram.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommandError::ElementNotFound` if the node does not exist
+    /// or `CommandError::InvalidOperation` if the diagram is not found.
+    pub fn new(
+        model: &UmlModel,
+        diagram_id: DiagramId,
+        element_id: UmlId,
+        new_position: Point,
+    ) -> Result<Self, CommandError> {
+        let d = model
+            .get_diagram(diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        d.get_node(element_id)
+            .ok_or(CommandError::ElementNotFound(element_id))?;
+        Ok(Self {
+            diagram_id,
+            element_id,
+            old_position: None,
+            new_position,
+            description: format!("Move node to ({:.0}, {:.0})", new_position.x, new_position.y),
+        })
+    }
+}
+
+impl Command for MoveNode {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let d = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        let node = d
+            .get_node_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        self.old_position = Some(node.bounds.origin);
+        node.bounds.origin = self.new_position;
+        Ok(())
+    }
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let d = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        let node = d
+            .get_node_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        if let Some(old) = self.old_position {
+            node.bounds.origin = old;
+        }
+        Ok(())
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+/// Command to resize a node on a diagram.
+#[derive(Debug)]
+pub struct ResizeNode {
+    diagram_id: DiagramId,
+    element_id: UmlId,
+    old_size: Option<Size>,
+    new_size: Size,
+    description: String,
+}
+
+impl ResizeNode {
+    /// Create a command to resize a node on a diagram.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommandError::ElementNotFound` if the node does not exist
+    /// or `CommandError::InvalidOperation` if the diagram is not found.
+    pub fn new(
+        model: &UmlModel,
+        diagram_id: DiagramId,
+        element_id: UmlId,
+        new_size: Size,
+    ) -> Result<Self, CommandError> {
+        let d = model
+            .get_diagram(diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        d.get_node(element_id)
+            .ok_or(CommandError::ElementNotFound(element_id))?;
+        Ok(Self {
+            diagram_id,
+            element_id,
+            old_size: None,
+            new_size,
+            description: format!("Resize node to {}×{}", new_size.width, new_size.height),
+        })
+    }
+}
+
+impl Command for ResizeNode {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let d = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        let node = d
+            .get_node_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        self.old_size = Some(node.bounds.size);
+        node.bounds.size = self.new_size;
+        Ok(())
+    }
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let d = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        let node = d
+            .get_node_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        if let Some(old) = self.old_size {
+            node.bounds.size = old;
+        }
+        Ok(())
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
