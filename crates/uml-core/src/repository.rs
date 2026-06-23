@@ -85,11 +85,11 @@ pub struct ReferenceError {
 pub enum ReferenceField {
     /// In a Package's children list.
     PackageChild,
-    /// In an Attribute's type_id.
+    /// In an Attribute's type_ref.model_id.
     AttributeType,
-    /// In an Operation's return_type_id.
+    /// In an Operation's return_type.model_id.
     OperationReturnType,
-    /// In a Parameter's type_id.
+    /// In a Parameter's type_ref.model_id.
     ParameterType,
     /// In an ElementBase's stereotype_id.
     Stereotype,
@@ -324,13 +324,18 @@ impl UmlModel {
     ///
     /// Checks that every `UmlId` reference points to an existing element:
     /// - `Package::children` — each child ID must exist
-    /// - `Attribute::type_id` — if Some, must exist
-    /// - `Operation::return_type_id` — if Some, must exist
-    /// - `Parameter::type_id` — if Some, must exist
+    /// - `Attribute::type_ref.model_id` — if Some, must exist
+    /// - `Operation::return_type.model_id` — if Some, must exist
+    /// - `Parameter::type_ref.model_id` — if Some, must exist
     /// - `ElementBase::stereotype_id` — if Some, must exist
     ///
     /// Returns a list of all dangling references found. An empty list means
     /// the model is fully consistent.
+    ///
+    /// NOTE: TypeReference::is_valid() is not checked here.
+    /// Callers should also validate that no TypeReference has both
+    /// model_id and type_name set (ambiguous state).
+    /// This can be added as a separate validation pass if needed.
     #[must_use]
     pub fn validate_references(&self) -> Vec<ReferenceError> {
         let mut errors = Vec::new();
@@ -398,33 +403,33 @@ impl UmlModel {
         errors: &mut Vec<ReferenceError>,
     ) {
         for attr in &classifier.attributes {
-            if let Some(type_id) = attr.type_id {
-                if !self.contains(type_id) {
+            if let Some(model_id) = attr.type_ref.model_id {
+                if !self.contains(model_id) {
                     errors.push(ReferenceError {
                         source_id,
                         field: ReferenceField::AttributeType,
-                        target_id: type_id,
+                        target_id: model_id,
                     });
                 }
             }
         }
         for op in &classifier.operations {
-            if let Some(ret_id) = op.return_type_id {
-                if !self.contains(ret_id) {
+            if let Some(model_id) = op.return_type.model_id {
+                if !self.contains(model_id) {
                     errors.push(ReferenceError {
                         source_id,
                         field: ReferenceField::OperationReturnType,
-                        target_id: ret_id,
+                        target_id: model_id,
                     });
                 }
             }
             for param in &op.parameters {
-                if let Some(param_type_id) = param.type_id {
-                    if !self.contains(param_type_id) {
+                if let Some(model_id) = param.type_ref.model_id {
+                    if !self.contains(model_id) {
                         errors.push(ReferenceError {
                             source_id,
                             field: ReferenceField::ParameterType,
-                            target_id: param_type_id,
+                            target_id: model_id,
                         });
                     }
                 }
@@ -513,7 +518,9 @@ impl Default for UmlModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{Attribute, Class, ClassifierData, ElementBase, Package, Relationship};
+    use crate::elements::{
+        Attribute, Class, ClassifierData, ElementBase, Package, Relationship, TypeReference,
+    };
     use crate::types::{AssociationType, Visibility};
 
     fn make_interface(name: &str) -> ModelElement {
@@ -844,8 +851,7 @@ mod tests {
         let dangling = UmlId::new();
         cls.classifier.add_attribute(Attribute {
             name: "address".into(),
-            type_id: Some(dangling),
-            type_name: None,
+            type_ref: TypeReference::model(dangling),
             visibility: Visibility::Private,
             initial_value: None,
             is_static: false,

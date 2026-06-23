@@ -27,7 +27,7 @@ pub mod types;
 // Re-exports for convenient access
 pub use elements::{
     Attribute, Class, ClassifierData, ElementBase, Enum, EnumLiteral, Interface, ModelElement,
-    NamedElement, Operation, Package, Parameter, Relationship, TemplateParameter,
+    NamedElement, Operation, Package, Parameter, Relationship, TemplateParameter, TypeReference,
 };
 pub use id::UmlId;
 pub use repository::{ModelError, ReferenceError, ReferenceField, UmlModel};

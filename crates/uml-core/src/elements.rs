@@ -98,6 +98,106 @@ impl ElementBase {
     }
 }
 
+// ─── TypeReference ────────────────────────────────────────────────────
+
+/// A reference to a type in the UML model.
+///
+/// Types can be either:
+/// - A UML classifier (class, interface, enumeration, datatype) referenced by `UmlId`
+/// - A primitive or external type referenced by name (e.g., "int", "String")
+///
+/// At most one of `model_id` or `type_name` should be `Some`. Both `None`
+/// means the type is unspecified (e.g., a void return type).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypeReference {
+    /// Reference to a UML model element (classifier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<UmlId>,
+    /// Type name for primitives or external types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+}
+
+impl TypeReference {
+    /// Create an unspecified type reference (both fields None).
+    #[must_use]
+    pub fn unspecified() -> Self {
+        Self {
+            model_id: None,
+            type_name: None,
+        }
+    }
+
+    /// Create a type reference to a UML model element.
+    #[must_use]
+    pub fn model(id: UmlId) -> Self {
+        Self {
+            model_id: Some(id),
+            type_name: None,
+        }
+    }
+
+    /// Create a type reference to a primitive or external type by name.
+    #[must_use]
+    pub fn primitive(name: impl Into<String>) -> Self {
+        Self {
+            model_id: None,
+            type_name: Some(name.into()),
+        }
+    }
+
+    /// Returns `true` if the type is resolved (has either model_id or type_name).
+    #[must_use]
+    pub fn is_resolved(&self) -> bool {
+        self.model_id.is_some() || self.type_name.is_some()
+    }
+
+    /// Returns `true` if the type references a UML model element.
+    #[must_use]
+    pub fn is_model_type(&self) -> bool {
+        self.model_id.is_some()
+    }
+
+    /// Returns `true` if the type is a primitive or external type name.
+    #[must_use]
+    pub fn is_primitive(&self) -> bool {
+        self.type_name.is_some()
+    }
+
+    /// Returns `true` if this reference is internally consistent.
+    ///
+    /// Both `model_id` and `type_name` being `Some` is ambiguous and invalid.
+    /// Both being `None` is valid (unspecified type).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !(self.model_id.is_some() && self.type_name.is_some())
+    }
+
+    /// Display the type as a human-readable string.
+    ///
+    /// Returns the `type_name` if present, otherwise looks up the model
+    /// element by `model_id`. Returns `"void"` if neither is set, and
+    /// `"<unknown:id>"` if the model_id does not resolve.
+    #[must_use]
+    pub fn display_name(&self, model: Option<&crate::repository::UmlModel>) -> String {
+        if let Some(ref name) = self.type_name {
+            name.clone()
+        } else if let Some(id) = self.model_id {
+            model
+                .and_then(|m| m.get(id))
+                .map_or_else(|| format!("<unknown:{id}>"), |e| e.name().to_string())
+        } else {
+            "void".to_string()
+        }
+    }
+}
+
+impl Default for TypeReference {
+    fn default() -> Self {
+        Self::unspecified()
+    }
+}
+
 // ─── Attribute ────────────────────────────────────────────────────────
 
 /// A classifier attribute (field / member variable).
@@ -105,10 +205,9 @@ impl ElementBase {
 pub struct Attribute {
     /// Attribute name.
     pub name: String,
-    /// Type of the attribute (reference to a UML type by ID).
-    pub type_id: Option<UmlId>,
-    /// Type name (fallback when the type is not a UML model element).
-    pub type_name: Option<String>,
+    /// The type of this attribute.
+    #[serde(default)]
+    pub type_ref: TypeReference,
     /// Visibility.
     pub visibility: Visibility,
     /// Initial value expression.
@@ -126,10 +225,9 @@ pub struct Attribute {
 pub struct Parameter {
     /// Parameter name.
     pub name: String,
-    /// Parameter type (reference to a UML type by ID).
-    pub type_id: Option<UmlId>,
-    /// Parameter type name (fallback).
-    pub type_name: Option<String>,
+    /// The type of this parameter.
+    #[serde(default)]
+    pub type_ref: TypeReference,
     /// Parameter direction (in, out, inout, return).
     pub direction: ParameterDirection,
     /// Default value expression.
@@ -144,10 +242,9 @@ pub struct Parameter {
 pub struct Operation {
     /// Operation name.
     pub name: String,
-    /// Return type (reference to a UML type by ID).
-    pub return_type_id: Option<UmlId>,
-    /// Return type name (fallback).
-    pub return_type_name: Option<String>,
+    /// Return type.
+    #[serde(default)]
+    pub return_type: TypeReference,
     /// Formal parameters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<Parameter>,
@@ -700,8 +797,7 @@ mod tests {
         let mut data = ClassifierData::new();
         data.add_attribute(Attribute {
             name: "count".into(),
-            type_id: None,
-            type_name: Some("int".into()),
+            type_ref: TypeReference::primitive("int"),
             visibility: Visibility::Private,
             initial_value: Some("0".into()),
             is_static: false,
@@ -715,12 +811,10 @@ mod tests {
         let mut data = ClassifierData::new();
         data.add_operation(Operation {
             name: "doSomething".into(),
-            return_type_id: None,
-            return_type_name: Some("void".into()),
+            return_type: TypeReference::primitive("void"),
             parameters: vec![Parameter {
                 name: "x".into(),
-                type_id: None,
-                type_name: Some("int".into()),
+                type_ref: TypeReference::primitive("int"),
                 direction: ParameterDirection::In,
                 default_value: None,
             }],
@@ -764,8 +858,7 @@ mod tests {
         let mut cls = Class::new("C");
         cls.classifier.add_attribute(Attribute {
             name: "x".into(),
-            type_id: None,
-            type_name: Some("int".into()),
+            type_ref: TypeReference::primitive("int"),
             visibility: Visibility::Private,
             initial_value: None,
             is_static: false,
@@ -837,8 +930,7 @@ mod tests {
         let mut cls = Class::new("MyClass");
         cls.classifier.add_attribute(Attribute {
             name: "field".into(),
-            type_id: None,
-            type_name: Some("String".into()),
+            type_ref: TypeReference::primitive("String"),
             visibility: Visibility::Private,
             initial_value: None,
             is_static: false,
@@ -956,5 +1048,97 @@ mod tests {
         let json = serde_json::to_string(&rel).unwrap();
         let back: Relationship = serde_json::from_str(&json).unwrap();
         assert_eq!(rel, back);
+    }
+
+    // ── TypeReference tests ──────────────────────────────────────────
+
+    #[test]
+    fn type_reference_unspecified() {
+        let tr = TypeReference::unspecified();
+        assert!(!tr.is_resolved());
+        assert!(!tr.is_model_type());
+        assert!(!tr.is_primitive());
+        assert!(tr.is_valid());
+        assert_eq!(tr.display_name(None), "void");
+    }
+
+    #[test]
+    fn type_reference_model() {
+        let id = UmlId::new();
+        let tr = TypeReference::model(id);
+        assert!(tr.is_resolved());
+        assert!(tr.is_model_type());
+        assert!(!tr.is_primitive());
+        assert!(tr.is_valid());
+        assert_eq!(tr.model_id, Some(id));
+    }
+
+    #[test]
+    fn type_reference_primitive() {
+        let tr = TypeReference::primitive("int");
+        assert!(tr.is_resolved());
+        assert!(!tr.is_model_type());
+        assert!(tr.is_primitive());
+        assert!(tr.is_valid());
+        assert_eq!(tr.display_name(None), "int");
+    }
+
+    #[test]
+    fn type_reference_both_set_is_invalid() {
+        let tr = TypeReference {
+            model_id: Some(UmlId::new()),
+            type_name: Some("int".into()),
+        };
+        assert!(!tr.is_valid());
+    }
+
+    #[test]
+    fn type_reference_default() {
+        let tr = TypeReference::default();
+        assert!(!tr.is_resolved());
+        assert!(tr.is_valid());
+    }
+
+    #[test]
+    fn type_reference_display_name_with_model() {
+        use crate::repository::UmlModel;
+
+        let mut model = UmlModel::new();
+        let cls = Class::new("Person");
+        let cls_id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+
+        let tr = TypeReference::model(cls_id);
+        assert_eq!(tr.display_name(Some(&model)), "Person");
+    }
+
+    #[test]
+    fn type_reference_display_name_dangling() {
+        let dangling = UmlId::new();
+        let tr = TypeReference::model(dangling);
+        let display = tr.display_name(None);
+        assert!(display.starts_with("<unknown:"));
+    }
+
+    #[test]
+    fn type_reference_serde_roundtrip_all_states() {
+        // Unspecified
+        let tr = TypeReference::unspecified();
+        let json = serde_json::to_string(&tr).unwrap();
+        let back: TypeReference = serde_json::from_str(&json).unwrap();
+        assert_eq!(tr, back);
+        assert!(back.is_valid());
+
+        // Model reference
+        let tr = TypeReference::model(UmlId::new());
+        let json = serde_json::to_string(&tr).unwrap();
+        let back: TypeReference = serde_json::from_str(&json).unwrap();
+        assert_eq!(tr, back);
+
+        // Primitive
+        let tr = TypeReference::primitive("String");
+        let json = serde_json::to_string(&tr).unwrap();
+        let back: TypeReference = serde_json::from_str(&json).unwrap();
+        assert_eq!(tr, back);
     }
 }
