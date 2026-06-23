@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 uml-core = { path = "../../crates/uml-core" }
+uml-io = { path = "../../crates/uml-io" }
+eframe = "0.31"
+egui = "0.31"
 clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
