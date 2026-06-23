@@ -6,16 +6,18 @@
 //!
 //! # Crate structure
 //!
-//! - `types`  — Enumerations: ObjectType, AssociationType, DiagramType, Visibility, etc.
-//! - `model`  — UML model structs (UmlClass, UmlAttribute, UmlPackage, etc.)
-//! - `id`     — Unique identifier types (UmlId, ObjectKey)
-//! - `repository` — Arena-based storage for UML model elements
-//! - `event`   — Model change events for undo/observer systems
+//! - `id`     — Unique identifier types (`UmlId`, `ObjectKey`)
+//! - `types`  — Enumerations: `ObjectType`, `AssociationType`, `DiagramType`, `Visibility`, etc.
+//! - `elements` — UML model element types: `Package`, `Class`, `Interface`, `Enum`
+//! - `model`  — UML model structs (future)
+//! - `repository` — Arena-based storage for UML model elements (future)
+//! - `event`   — Model change events for undo/observer systems (future)
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms, clippy::all, clippy::pedantic)]
 #![allow(clippy::doc_markdown)]
 
+pub mod elements;
 pub mod event;
 pub mod id;
 pub mod model;
@@ -23,5 +25,9 @@ pub mod repository;
 pub mod types;
 
 // Re-exports for convenient access
+pub use elements::{
+    Attribute, Class, ClassifierData, ElementBase, Enum, EnumLiteral, Interface, ModelElement,
+    NamedElement, Operation, Package, Parameter, TemplateParameter,
+};
 pub use id::UmlId;
 pub use types::{AssociationType, DiagramType, ObjectType, ParameterDirection, Visibility};
