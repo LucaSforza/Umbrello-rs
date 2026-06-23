@@ -40,7 +40,11 @@ fn find_test_dir() -> Option<String> {
     }
 
     // Fallback: try relative paths from the current directory
-    let candidates = ["../../../test", "../../test", "../test", "test"];
+    let candidates = [
+        "../../tests/data/xmi",
+        "../../../tests/data/xmi",
+        "tests/data/xmi",
+    ];
     for candidate in &candidates {
         let path = Path::new(candidate);
         if path.exists() && path.is_dir() {

@@ -151,9 +151,12 @@ impl UmbrelloApp {
                 if self.model.diagrams().is_empty() {
                     if self.model.is_empty() {
                         ui.label("No UML model loaded. Try:");
-                        ui.label("  cargo run -- ../test/test-COG.xmi");
+                        ui.label("  cargo run -- tests/data/xmi/test-COG.xmi");
                     } else {
-                        ui.label(format!("Model has {} elements but no diagrams.", self.model.len()));
+                        ui.label(format!(
+                            "Model has {} elements but no diagrams.",
+                            self.model.len()
+                        ));
                         ui.add_space(8.0);
                         ui.label("→ Click 'New Class Diagram' in the left panel");
                         ui.label("  to create a visual layout.");

@@ -13,9 +13,8 @@ use uml_io::xmi::XmiReader;
 fn main() -> anyhow::Result<()> {
     let mut model = UmlModel::new();
     // Try multiple paths: from workspace root (cargo run), from binary dir
-    let loaded = load_xmi("../test/test-COG.xmi", &mut model)
-        || load_xmi("../../test/test-COG.xmi", &mut model)
-        || load_xmi("test/test-COG.xmi", &mut model);
+    let loaded = load_xmi("tests/data/xmi/test-COG.xmi", &mut model)
+        || load_xmi("../tests/data/xmi/test-COG.xmi", &mut model);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
