@@ -39,8 +39,9 @@ pub mod xmi;
 // Re-exports for convenient access
 pub use common::UmbrelloError;
 pub use elements::{
-    Attribute, Class, ClassifierData, ElementBase, Enum, EnumLiteral, Interface, ModelElement,
-    NamedElement, Operation, Package, Parameter, Relationship, TemplateParameter, TypeReference,
+    Attribute, Class, ClassifierData, Datatype, ElementBase, Enum, EnumLiteral, Interface,
+    ModelElement, NamedElement, Operation, Package, Parameter, Relationship, TemplateParameter,
+    TypeReference,
 };
 pub use id::UmlId;
 pub use repository::{ModelError, ReferenceError, ReferenceField, UmlModel};

@@ -4,6 +4,7 @@
 //! Merged from `uml-persistence`, `uml-import*`, and `uml-export` crates.
 
 pub mod storage;
+pub mod xmi;
 
 /// Supported file formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

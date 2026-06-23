@@ -362,6 +362,9 @@ impl UmlModel {
                 ModelElement::Enum(enm) => {
                     self.validate_classifier_references(id, &enm.classifier, &mut errors);
                 },
+                ModelElement::Datatype(dt) => {
+                    self.validate_classifier_references(id, &dt.classifier, &mut errors);
+                },
                 ModelElement::Relationship(rel) => {
                     if !self.contains(rel.source_id) {
                         errors.push(ReferenceError {

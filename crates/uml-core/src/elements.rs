@@ -80,6 +80,11 @@ pub struct ElementBase {
     /// `true` if the element is static (class-level, not instance-level).
     #[serde(default)]
     pub is_static: bool,
+    /// Original XMI id from the source file.
+    /// Preserved for round-trip XMI compatibility.
+    /// None for elements created natively in Umbrello-RS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_xmi_id: Option<String>,
 }
 
 impl ElementBase {
@@ -94,6 +99,7 @@ impl ElementBase {
             documentation: String::new(),
             is_abstract: false,
             is_static: false,
+            original_xmi_id: None,
         }
     }
 }
@@ -487,6 +493,27 @@ impl Enum {
     }
 }
 
+/// A UML datatype (primitive or structured type).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Datatype {
+    /// Common element metadata.
+    pub base: ElementBase,
+    /// Classifier data: attributes, operations, templates.
+    #[serde(default)]
+    pub classifier: ClassifierData,
+}
+
+impl Datatype {
+    /// Create a new datatype with the given name.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            base: ElementBase::new(name),
+            classifier: ClassifierData::default(),
+        }
+    }
+}
+
 // ─── Relationship ──────────────────────────────────────────────────────
 
 /// A UML relationship between two model elements.
@@ -616,6 +643,8 @@ pub enum ModelElement {
     Interface(Interface),
     /// A UML enumeration.
     Enum(Enum),
+    /// A UML datatype (primitive or structured type).
+    Datatype(Datatype),
     /// A UML relationship (generalization, association, aggregation, composition, dependency, realization).
     Relationship(Relationship),
 }
@@ -629,6 +658,7 @@ impl ModelElement {
             Self::Class(_) => ObjectType::Class,
             Self::Interface(_) => ObjectType::Interface,
             Self::Enum(_) => ObjectType::Enumeration,
+            Self::Datatype(_) => ObjectType::Datatype,
             Self::Relationship(rel) => rel.object_type(),
         }
     }
@@ -641,6 +671,7 @@ impl ModelElement {
             Self::Class(c) => &c.base,
             Self::Interface(i) => &i.base,
             Self::Enum(e) => &e.base,
+            Self::Datatype(d) => &d.base,
             Self::Relationship(r) => &r.base,
         }
     }
@@ -652,6 +683,7 @@ impl ModelElement {
             Self::Class(c) => &mut c.base,
             Self::Interface(i) => &mut i.base,
             Self::Enum(e) => &mut e.base,
+            Self::Datatype(d) => &mut d.base,
             Self::Relationship(r) => &mut r.base,
         }
     }
@@ -676,7 +708,7 @@ impl ModelElement {
     /// Check if this element is a classifier (has attributes/operations).
     #[must_use]
     pub fn is_classifier(&self) -> bool {
-        matches!(self, Self::Class(_) | Self::Interface(_) | Self::Enum(_))
+        matches!(self, Self::Class(_) | Self::Interface(_) | Self::Enum(_) | Self::Datatype(_))
     }
 
     /// Check if this element is a package.
@@ -692,6 +724,7 @@ impl ModelElement {
             Self::Class(c) => Some(&c.classifier),
             Self::Interface(i) => Some(&i.classifier),
             Self::Enum(e) => Some(&e.classifier),
+            Self::Datatype(d) => Some(&d.classifier),
             Self::Package(_) | Self::Relationship(_) => None,
         }
     }
@@ -702,6 +735,7 @@ impl ModelElement {
             Self::Class(c) => Some(&mut c.classifier),
             Self::Interface(i) => Some(&mut i.classifier),
             Self::Enum(e) => Some(&mut e.classifier),
+            Self::Datatype(d) => Some(&mut d.classifier),
             Self::Package(_) | Self::Relationship(_) => None,
         }
     }
@@ -968,6 +1002,41 @@ mod tests {
         let json = serde_json::to_string(&elem).unwrap();
         let back: ModelElement = serde_json::from_str(&json).unwrap();
         assert_eq!(elem, back);
+    }
+
+    // ── Datatype tests ───────────────────────────────────────────────
+
+    #[test]
+    fn datatype_creation() {
+        let dt = Datatype::new("int");
+        assert_eq!(dt.base.name, "int");
+        assert!(!dt.base.is_abstract);
+    }
+
+    #[test]
+    fn model_element_datatype_object_type() {
+        let elem = ModelElement::Datatype(Datatype::new("String"));
+        assert_eq!(elem.object_type(), ObjectType::Datatype);
+        assert!(elem.is_classifier());
+        assert!(elem.classifier_data().is_some());
+    }
+
+    #[test]
+    fn serde_roundtrip_datatype() {
+        let dt = Datatype::new("float");
+        let json = serde_json::to_string(&dt).unwrap();
+        let back: Datatype = serde_json::from_str(&json).unwrap();
+        assert_eq!(dt, back);
+    }
+
+    #[test]
+    fn element_base_original_xmi_id() {
+        let base = ElementBase::new("Test");
+        assert!(base.original_xmi_id.is_none());
+
+        let mut base = ElementBase::new("FromXMI");
+        base.original_xmi_id = Some("O0JJV24XoKdQ".into());
+        assert_eq!(base.original_xmi_id, Some("O0JJV24XoKdQ".to_string()));
     }
 
     // ── Relationship tests ───────────────────────────────────────────
