@@ -2623,6 +2623,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_usecase_with_comment() {
+        // XMI-24: UseCase with `comment` attribute → parsed without error
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:UseCase xmi.id="UC1" name="Login" comment="asfs" visibility="public"/>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+</XMI>"#;
+
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        let uc = model
+            .iter()
+            .find(|(_, e)| matches!(e, ModelElement::UseCase(_)));
+        assert!(uc.is_some(), "should find a UseCase with comment attr");
+        let (_id, elem) = uc.unwrap();
+        assert_eq!(elem.name(), "Login");
+        assert_eq!(elem.base().original_xmi_id.as_deref(), Some("UC1"));
+    }
+
+    #[test]
     fn load_real_duc_xmi_actors_usecases() {
         // Find the test-DUC.xmi file relative to the crate
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
