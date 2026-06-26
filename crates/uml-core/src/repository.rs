@@ -385,6 +385,9 @@ impl UmlModel {
                         });
                     }
                 },
+                ModelElement::Actor(_) | ModelElement::UseCase(_) => {
+                    // These types have no additional references beyond the generic stereotype check below.
+                },
             }
 
             // Validate stereotype reference

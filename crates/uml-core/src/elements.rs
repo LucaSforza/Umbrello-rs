@@ -626,6 +626,68 @@ impl Relationship {
     }
 }
 
+// ─── Actor ────────────────────────────────────────────────────────────
+
+/// A UML Actor — represents a role played by a user or external system.
+///
+/// Actors are participants in Use Case diagrams. They are non-classifier,
+/// non-container elements that carry only identity and metadata.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Actor {
+    /// Common element metadata.
+    pub base: ElementBase,
+}
+
+impl Actor {
+    /// Create a new Actor with the given name.
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self {
+            base: ElementBase {
+                id: UmlId::new(),
+                name: name.to_string(),
+                visibility: Visibility::Public,
+                stereotype_id: None,
+                documentation: String::new(),
+                is_abstract: false,
+                is_static: false,
+                original_xmi_id: None,
+            },
+        }
+    }
+}
+
+// ─── UseCase ───────────────────────────────────────────────────────────
+
+/// A UML UseCase — represents a unit of functionality provided by the system.
+///
+/// UseCases appear as ovals in Use Case diagrams. They are non-classifier,
+/// non-container elements.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UseCase {
+    /// Common element metadata.
+    pub base: ElementBase,
+}
+
+impl UseCase {
+    /// Create a new UseCase with the given name.
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self {
+            base: ElementBase {
+                id: UmlId::new(),
+                name: name.to_string(),
+                visibility: Visibility::Public,
+                stereotype_id: None,
+                documentation: String::new(),
+                is_abstract: false,
+                is_static: false,
+                original_xmi_id: None,
+            },
+        }
+    }
+}
+
 // ─── ModelElement enum (type-safe dispatch) ─────────────────────────
 
 /// A UML model element.
@@ -647,6 +709,10 @@ pub enum ModelElement {
     Datatype(Datatype),
     /// A UML relationship (generalization, association, aggregation, composition, dependency, realization).
     Relationship(Relationship),
+    /// An Actor in a Use Case diagram.
+    Actor(Actor),
+    /// A UseCase in a Use Case diagram.
+    UseCase(UseCase),
 }
 
 impl ModelElement {
@@ -660,6 +726,8 @@ impl ModelElement {
             Self::Enum(_) => ObjectType::Enumeration,
             Self::Datatype(_) => ObjectType::Datatype,
             Self::Relationship(rel) => rel.object_type(),
+            Self::Actor(_) => ObjectType::Actor,
+            Self::UseCase(_) => ObjectType::UseCase,
         }
     }
 
@@ -673,6 +741,8 @@ impl ModelElement {
             Self::Enum(e) => &e.base,
             Self::Datatype(d) => &d.base,
             Self::Relationship(r) => &r.base,
+            Self::Actor(a) => &a.base,
+            Self::UseCase(u) => &u.base,
         }
     }
 
@@ -685,6 +755,8 @@ impl ModelElement {
             Self::Enum(e) => &mut e.base,
             Self::Datatype(d) => &mut d.base,
             Self::Relationship(r) => &mut r.base,
+            Self::Actor(a) => &mut a.base,
+            Self::UseCase(u) => &mut u.base,
         }
     }
 
@@ -725,7 +797,7 @@ impl ModelElement {
             Self::Interface(i) => Some(&i.classifier),
             Self::Enum(e) => Some(&e.classifier),
             Self::Datatype(d) => Some(&d.classifier),
-            Self::Package(_) | Self::Relationship(_) => None,
+            Self::Package(_) | Self::Relationship(_) | Self::Actor(_) | Self::UseCase(_) => None,
         }
     }
 
@@ -736,7 +808,7 @@ impl ModelElement {
             Self::Interface(i) => Some(&mut i.classifier),
             Self::Enum(e) => Some(&mut e.classifier),
             Self::Datatype(d) => Some(&mut d.classifier),
-            Self::Package(_) | Self::Relationship(_) => None,
+            Self::Package(_) | Self::Relationship(_) | Self::Actor(_) | Self::UseCase(_) => None,
         }
     }
 }
@@ -1209,5 +1281,91 @@ mod tests {
         let json = serde_json::to_string(&tr).unwrap();
         let back: TypeReference = serde_json::from_str(&json).unwrap();
         assert_eq!(tr, back);
+    }
+
+    // ── Actor tests ────────────────────────────────────────────────
+
+    #[test]
+    fn actor_creation() {
+        let actor = Actor::new("User");
+        assert_eq!(actor.base.name, "User");
+        assert_eq!(actor.base.visibility, Visibility::Public);
+        assert!(actor.base.stereotype_id.is_none());
+        assert!(actor.base.documentation.is_empty());
+        assert!(!actor.base.is_abstract);
+        assert!(!actor.base.is_static);
+    }
+
+    #[test]
+    fn actor_model_element_insert() {
+        use crate::repository::UmlModel;
+
+        let mut model = UmlModel::new();
+        let actor = Actor::new("User");
+        let id = actor.base.id;
+        model.insert(ModelElement::Actor(actor));
+
+        let retrieved = model.get(id).expect("Actor should be in model");
+        assert_eq!(retrieved.object_type(), ObjectType::Actor);
+        assert_eq!(retrieved.name(), "User");
+    }
+
+    #[test]
+    fn actor_not_classifier() {
+        let elem = ModelElement::Actor(Actor::new("User"));
+        assert!(!elem.is_classifier());
+    }
+
+    #[test]
+    fn actor_not_container() {
+        let elem = ModelElement::Actor(Actor::new("User"));
+        assert!(!elem.is_package());
+    }
+
+    #[test]
+    fn serde_roundtrip_actor() {
+        let actor = Actor::new("Administrator");
+        let json = serde_json::to_string(&actor).unwrap();
+        let back: Actor = serde_json::from_str(&json).unwrap();
+        assert_eq!(actor, back);
+    }
+
+    // ── UseCase tests ──────────────────────────────────────────────
+
+    #[test]
+    fn usecase_creation() {
+        let uc = UseCase::new("Login");
+        assert_eq!(uc.base.name, "Login");
+        assert_eq!(uc.base.visibility, Visibility::Public);
+        assert!(uc.base.stereotype_id.is_none());
+        assert!(uc.base.documentation.is_empty());
+    }
+
+    #[test]
+    fn usecase_model_element_insert() {
+        use crate::repository::UmlModel;
+
+        let mut model = UmlModel::new();
+        let uc = UseCase::new("Login");
+        let id = uc.base.id;
+        model.insert(ModelElement::UseCase(uc));
+
+        let retrieved = model.get(id).expect("UseCase should be in model");
+        assert_eq!(retrieved.object_type(), ObjectType::UseCase);
+        assert_eq!(retrieved.name(), "Login");
+    }
+
+    #[test]
+    fn usecase_not_classifier() {
+        let elem = ModelElement::UseCase(UseCase::new("Search"));
+        assert!(!elem.is_classifier());
+    }
+
+    #[test]
+    fn serde_roundtrip_usecase() {
+        let uc = UseCase::new("Checkout");
+        let json = serde_json::to_string(&uc).unwrap();
+        let back: UseCase = serde_json::from_str(&json).unwrap();
+        assert_eq!(uc, back);
     }
 }

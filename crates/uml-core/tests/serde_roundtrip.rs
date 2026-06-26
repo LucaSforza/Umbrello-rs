@@ -130,3 +130,17 @@ fn parameter_direction_all_variants_roundtrip() {
         roundtrip(v);
     }
 }
+
+#[test]
+fn serde_roundtrip_actor() {
+    use uml_core::elements::Actor;
+    let actor = Actor::new("User");
+    roundtrip(&actor);
+}
+
+#[test]
+fn serde_roundtrip_usecase() {
+    use uml_core::elements::UseCase;
+    let uc = UseCase::new("Login");
+    roundtrip(&uc);
+}
