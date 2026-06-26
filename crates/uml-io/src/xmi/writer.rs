@@ -10,7 +10,9 @@ use std::io::Write;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use quick_xml::writer::Writer as XmlWriter;
 
-use uml_core::{AssociationType, ModelElement, Relationship, TypeReference, UmlId, UmlModel};
+use uml_core::{
+    AssociationType, ElementBase, ModelElement, Relationship, TypeReference, UmlId, UmlModel,
+};
 
 /// Errors during XMI writing.
 #[derive(Debug, thiserror::Error)]
@@ -272,11 +274,39 @@ impl<W: Write> XmiWriter<W> {
                 self.write_enum(elem, &enm.base, enm.literals.as_slice(), model)
             },
             ModelElement::Datatype(dt) => self.write_class(elem, &dt.base, &dt.classifier, model),
+            ModelElement::Actor(actor) => self.write_simple_element("UML:Actor", &actor.base),
+            ModelElement::UseCase(uc) => self.write_simple_element("UML:UseCase", &uc.base),
             ModelElement::Relationship(_) => {
                 // Relationships are written separately in write_model_wrapper
                 Ok(())
             },
         }
+    }
+
+    /// Write a simple UML element (Actor, UseCase) as a self-closing tag.
+    fn write_simple_element(
+        &mut self,
+        tag_name: &str,
+        base: &ElementBase,
+    ) -> Result<(), XmiWriteError> {
+        let xmi_id = self.lookup_xmi_id(base.id);
+        let mut tag = BytesStart::new(tag_name);
+        tag.push_attribute(("xmi.id", xmi_id.as_str()));
+        tag.push_attribute(("name", base.name.as_str()));
+        tag.push_attribute(("visibility", base.visibility.as_str()));
+        tag.push_attribute(("isSpecification", "false"));
+        tag.push_attribute(("isAbstract", if base.is_abstract { "true" } else { "false" }));
+        tag.push_attribute(("isLeaf", "false"));
+        tag.push_attribute(("isRoot", "false"));
+
+        // Write stereotype reference if set
+        if let Some(st_id) = base.stereotype_id {
+            let st_xmi = self.lookup_xmi_id(st_id);
+            tag.push_attribute(("stereotype", st_xmi.as_str()));
+        }
+
+        self.writer.write_event(Event::Empty(tag))?;
+        Ok(())
     }
 
     // ─── Package ───────────────────────────────────────────────────────
@@ -848,6 +878,8 @@ impl<W: Write> XmiWriter<W> {
                 ModelElement::Interface(_) => "interfacewidget",
                 ModelElement::Enum(_) => "enumwidget",
                 ModelElement::Datatype(_) => "datatypewidget",
+                ModelElement::Actor(_) => "actorwidget",
+                ModelElement::UseCase(_) => "usecasewidget",
                 ModelElement::Relationship(_) => "classwidget", // fallback
             };
         }
@@ -908,8 +940,8 @@ mod tests {
     use super::*;
     use crate::xmi::reader::XmiReader;
     use uml_core::{
-        Attribute, Class, Datatype, Enum, Interface, ModelElement, Operation, Package, Parameter,
-        ParameterDirection, TypeReference, Visibility,
+        Actor, Attribute, Class, Datatype, Enum, Interface, ModelElement, Operation, Package,
+        Parameter, ParameterDirection, TypeReference, UseCase, Visibility,
     };
 
     /// Helper: create a simple model with one class.
@@ -1029,6 +1061,8 @@ mod tests {
         model.insert(ModelElement::Interface(Interface::new("Serializable")));
         model.insert(ModelElement::Enum(Enum::new("Color")));
         model.insert(ModelElement::Datatype(Datatype::new("int")));
+        model.insert(ModelElement::Actor(Actor::new("User")));
+        model.insert(ModelElement::UseCase(UseCase::new("Login")));
 
         model
     }
@@ -1089,6 +1123,16 @@ mod tests {
                 .filter(|(_, e)| matches!(e, ModelElement::Datatype(_)))
                 .count()
         };
+        let count_actors = |m: &UmlModel| {
+            m.iter()
+                .filter(|(_, e)| matches!(e, ModelElement::Actor(_)))
+                .count()
+        };
+        let count_usecases = |m: &UmlModel| {
+            m.iter()
+                .filter(|(_, e)| matches!(e, ModelElement::UseCase(_)))
+                .count()
+        };
         let count_rels = |m: &UmlModel| {
             m.iter()
                 .filter(|(_, e)| matches!(e, ModelElement::Relationship(_)))
@@ -1099,6 +1143,8 @@ mod tests {
         assert_eq!(count_interfaces(model), count_interfaces(&model2), "interface count mismatch");
         assert_eq!(count_enums(model), count_enums(&model2), "enum count mismatch");
         assert_eq!(count_datatypes(model), count_datatypes(&model2), "datatype count mismatch");
+        assert_eq!(count_actors(model), count_actors(&model2), "actor count mismatch");
+        assert_eq!(count_usecases(model), count_usecases(&model2), "usecase count mismatch");
         assert_eq!(count_rels(model), count_rels(&model2), "relationship count mismatch");
 
         // Compare specific class names
@@ -1176,6 +1222,74 @@ mod tests {
         assert!(xml.contains("UML:Interface"));
         assert!(xml.contains("UML:Enumeration"));
         assert!(xml.contains("UML:DataType"));
+        assert!(xml.contains("UML:Actor"));
+        assert!(xml.contains("UML:UseCase"));
+    }
+
+    #[test]
+    fn write_actor_to_xmi() {
+        let mut model = UmlModel::new();
+        model.insert(ModelElement::Actor(Actor::new("User")));
+        let xml = write_to_string(&model);
+
+        assert!(xml.contains("UML:Actor"));
+        assert!(xml.contains("name=\"User\""));
+        assert!(xml.contains("visibility=\"public\""));
+        assert!(xml.contains("xmi.id"));
+    }
+
+    #[test]
+    fn write_usecase_to_xmi() {
+        let mut model = UmlModel::new();
+        model.insert(ModelElement::UseCase(UseCase::new("Login")));
+        let xml = write_to_string(&model);
+
+        assert!(xml.contains("UML:UseCase"));
+        assert!(xml.contains("name=\"Login\""));
+        assert!(xml.contains("visibility=\"public\""));
+        assert!(xml.contains("xmi.id"));
+    }
+
+    #[test]
+    fn guess_actor_widget_type() {
+        let model = model_with_various_types();
+        let actor_id = model
+            .iter()
+            .find(|(_, e)| matches!(e, ModelElement::Actor(_)))
+            .map(|(id, _)| id)
+            .expect("should find an Actor");
+        let mut buf = Vec::new();
+        let writer = XmiWriter::new(&mut buf);
+        let widget_type = writer.guess_widget_type(&model, actor_id);
+        assert_eq!(widget_type, "actorwidget");
+    }
+
+    #[test]
+    fn guess_usecase_widget_type() {
+        let model = model_with_various_types();
+        let uc_id = model
+            .iter()
+            .find(|(_, e)| matches!(e, ModelElement::UseCase(_)))
+            .map(|(id, _)| id)
+            .expect("should find a UseCase");
+        let mut buf = Vec::new();
+        let writer = XmiWriter::new(&mut buf);
+        let widget_type = writer.guess_widget_type(&model, uc_id);
+        assert_eq!(widget_type, "usecasewidget");
+    }
+
+    #[test]
+    fn actor_roundtrip() {
+        let mut model = UmlModel::new();
+        model.insert(ModelElement::Actor(Actor::new("Waiter")));
+        round_trip_and_compare(&model);
+    }
+
+    #[test]
+    fn usecase_roundtrip() {
+        let mut model = UmlModel::new();
+        model.insert(ModelElement::UseCase(UseCase::new("PlaceOrder")));
+        round_trip_and_compare(&model);
     }
 
     // ─── Round-trip tests ──────────────────────────────────────────────
