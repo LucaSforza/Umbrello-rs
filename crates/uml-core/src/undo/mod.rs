@@ -6,6 +6,8 @@
 
 pub mod commands;
 
+pub use commands::CreateEdge;
+
 use std::fmt::Debug;
 
 use crate::id::UmlId;

@@ -1,9 +1,9 @@
 //! Concrete command implementations for model mutations.
 
-use crate::elements::ModelElement;
+use crate::elements::{ModelElement, Relationship};
 use crate::id::UmlId;
 use crate::repository::UmlModel;
-use crate::types::Visibility;
+use crate::types::{AssociationType, Visibility};
 
 use super::{Command, CommandError};
 
@@ -414,7 +414,7 @@ impl Command for ChangeDocumentation {
 
 // ─── Diagram visual commands ─────────────────────────────────────
 
-use crate::diagram::{DiagramId, Point, Rect, Size, ViewNode};
+use crate::diagram::{DiagramId, EdgeId, LineRouting, Point, Rect, Size, ViewEdge, ViewNode};
 
 /// Command to add a node to a diagram.
 #[derive(Debug)]
@@ -657,13 +657,143 @@ impl Command for ResizeNode {
     }
 }
 
+// ─── Edge creation command ──────────────────────────────────────────
+
+/// Command to create a relationship edge between two nodes on a diagram.
+///
+/// On execute: inserts the Relationship into UmlModel, adds a ViewEdge to the diagram.
+/// On undo: removes the ViewEdge from the diagram, removes the Relationship from the model.
+///
+/// Follows the snapshot pattern:
+/// - `relationship_element` is `Some` before first execute / after undo.
+/// - `execute()` takes it and inserts into the model.
+/// - `undo()` removes it from the model and stores it back.
+#[derive(Debug)]
+pub struct CreateEdge {
+    /// The diagram to add the edge to.
+    diagram_id: DiagramId,
+    /// The UmlId of the created Relationship element.
+    relationship_id: UmlId,
+    /// The EdgeId of the created ViewEdge.
+    edge_id: EdgeId,
+    /// The source node's model element ID.
+    source_node_id: UmlId,
+    /// The target node's model element ID.
+    target_node_id: UmlId,
+    /// The Relationship element; consumed on execute, restored on undo.
+    relationship_element: Option<ModelElement>,
+    /// Human-readable description.
+    description: String,
+}
+
+impl CreateEdge {
+    /// Create a command that will create a new relationship edge between two nodes.
+    ///
+    /// The relationship is constructed using the appropriate `Relationship` constructor
+    /// based on `kind`, and both a `UmlId` and `EdgeId` are generated automatically.
+    #[must_use]
+    pub fn new(
+        diagram_id: DiagramId,
+        source_node_id: UmlId,
+        target_node_id: UmlId,
+        kind: AssociationType,
+    ) -> Self {
+        let rel = match kind {
+            AssociationType::Generalization => {
+                Relationship::new_generalization(source_node_id, target_node_id)
+            },
+            AssociationType::Realization => {
+                Relationship::new_realization(source_node_id, target_node_id)
+            },
+            AssociationType::Association => {
+                Relationship::new_association(source_node_id, target_node_id)
+            },
+            AssociationType::Aggregation => {
+                Relationship::new_aggregation(source_node_id, target_node_id)
+            },
+            AssociationType::Composition => {
+                Relationship::new_composition(source_node_id, target_node_id)
+            },
+            AssociationType::Dependency => {
+                Relationship::new_dependency(source_node_id, target_node_id)
+            },
+        };
+        let rel_id = rel.base.id;
+        let edge_id = EdgeId::new();
+        let kind_name = match kind {
+            AssociationType::Generalization => "Generalization",
+            AssociationType::Realization => "Realization",
+            AssociationType::Association => "Association",
+            AssociationType::Aggregation => "Aggregation",
+            AssociationType::Composition => "Composition",
+            AssociationType::Dependency => "Dependency",
+        };
+        let desc = format!("Create {kind_name} edge");
+        Self {
+            diagram_id,
+            relationship_id: rel_id,
+            edge_id,
+            source_node_id,
+            target_node_id,
+            relationship_element: Some(ModelElement::Relationship(rel)),
+            description: desc,
+        }
+    }
+}
+
+impl Command for CreateEdge {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        // 1. Insert the relationship into the model
+        let rel = self
+            .relationship_element
+            .take()
+            .ok_or_else(|| CommandError::InvalidOperation("CreateEdge already executed".into()))?;
+        model.insert(rel);
+
+        // 2. Add the ViewEdge to the diagram
+        let d = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        d.add_edge(
+            self.edge_id,
+            ViewEdge::new(
+                self.relationship_id,
+                self.source_node_id,
+                self.target_node_id,
+                LineRouting::Direct,
+            ),
+        );
+        Ok(())
+    }
+
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        // 1. Remove the ViewEdge from the diagram
+        if let Some(d) = model.get_diagram_mut(self.diagram_id) {
+            d.remove_edge(self.edge_id);
+        }
+
+        // 2. Remove the relationship from the model and store for re-execution
+        self.relationship_element = model.remove(self.relationship_id);
+        if self.relationship_element.is_none() {
+            return Err(CommandError::ElementNotFound(self.relationship_id));
+        }
+        Ok(())
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
 #[allow(clippy::needless_pass_by_value)]
 mod tests {
     use super::*;
+    use crate::diagram::{Diagram, DiagramKind, Rect, ViewNode};
     use crate::elements::{Class, Package};
+    use crate::types::AssociationType;
 
     #[test]
     fn create_element_description() {
@@ -844,5 +974,178 @@ mod tests {
         let result = ChangeDocumentation::new(&model, id, "test".into());
         assert!(result.is_err());
         assert!(matches!(result, Err(CommandError::ElementNotFound(_))));
+    }
+
+    // ── CMD-10 through CMD-15: CreateEdge command tests ─────────────
+
+    fn setup_model_with_two_nodes() -> (UmlModel, DiagramId, UmlId, UmlId) {
+        let mut model = UmlModel::new();
+        let diagram = Diagram::new("Test", DiagramKind::Class);
+        let diagram_id = diagram.id;
+        model.add_diagram(diagram);
+
+        let cls1 = ModelElement::Class(Class::new("ClassA"));
+        let src_id = cls1.id();
+        model.insert(cls1);
+
+        let cls2 = ModelElement::Class(Class::new("ClassB"));
+        let tgt_id = cls2.id();
+        model.insert(cls2);
+
+        let d = model.get_diagram_mut(diagram_id).unwrap();
+        d.add_node(src_id, ViewNode::new(src_id, Rect::new(0.0, 0.0, 100.0, 60.0)));
+        d.add_node(tgt_id, ViewNode::new(tgt_id, Rect::new(200.0, 0.0, 100.0, 60.0)));
+
+        (model, diagram_id, src_id, tgt_id)
+    }
+
+    #[test]
+    fn create_edge_execute_generalization() {
+        let (mut model, diagram_id, src_id, tgt_id) = setup_model_with_two_nodes();
+
+        let mut cmd = CreateEdge::new(diagram_id, src_id, tgt_id, AssociationType::Generalization);
+        cmd.execute(&mut model).unwrap();
+
+        // Verify Relationship exists in model
+        assert!(model.contains(cmd.relationship_id));
+        let rel = model.get(cmd.relationship_id).unwrap();
+        if let crate::elements::ModelElement::Relationship(r) = rel {
+            assert_eq!(r.kind, AssociationType::Generalization);
+            assert_eq!(r.source_id, src_id);
+            assert_eq!(r.target_id, tgt_id);
+        } else {
+            panic!("Expected Relationship");
+        }
+
+        // Verify ViewEdge exists in diagram
+        let d = model.get_diagram(diagram_id).unwrap();
+        assert!(d.edges.contains_key(&cmd.edge_id));
+        let edge = &d.edges[&cmd.edge_id];
+        assert_eq!(edge.relationship_id, cmd.relationship_id);
+        assert_eq!(edge.source_node_id, src_id);
+        assert_eq!(edge.target_node_id, tgt_id);
+        assert_eq!(edge.routing, crate::diagram::LineRouting::Direct);
+    }
+
+    #[test]
+    fn create_edge_undo_generalization() {
+        let (mut model, diagram_id, src_id, tgt_id) = setup_model_with_two_nodes();
+
+        let mut cmd = CreateEdge::new(diagram_id, src_id, tgt_id, AssociationType::Generalization);
+        let rel_id = cmd.relationship_id;
+        let edge_id = cmd.edge_id;
+
+        cmd.execute(&mut model).unwrap();
+        assert!(model.contains(rel_id));
+        assert!(model
+            .get_diagram(diagram_id)
+            .unwrap()
+            .edges
+            .contains_key(&edge_id));
+
+        cmd.undo(&mut model).unwrap();
+        assert!(!model.contains(rel_id));
+        assert!(!model
+            .get_diagram(diagram_id)
+            .unwrap()
+            .edges
+            .contains_key(&edge_id));
+    }
+
+    #[test]
+    fn create_edge_execute_all_kinds() {
+        let kinds = [
+            AssociationType::Generalization,
+            AssociationType::Realization,
+            AssociationType::Association,
+            AssociationType::Aggregation,
+            AssociationType::Composition,
+            AssociationType::Dependency,
+        ];
+
+        for kind in &kinds {
+            let (mut model, diagram_id, src_id, tgt_id) = setup_model_with_two_nodes();
+
+            let mut cmd = CreateEdge::new(diagram_id, src_id, tgt_id, *kind);
+            cmd.execute(&mut model).unwrap();
+
+            let rel = model.get(cmd.relationship_id).unwrap();
+            if let crate::elements::ModelElement::Relationship(r) = rel {
+                assert_eq!(r.kind, *kind, "kind mismatch for {kind:?}");
+            } else {
+                panic!("Expected Relationship for {kind:?}");
+            }
+
+            let d = model.get_diagram(diagram_id).unwrap();
+            assert!(d.edges.contains_key(&cmd.edge_id), "edge not found for {kind:?}");
+        }
+    }
+
+    #[test]
+    fn create_edge_diagram_not_found() {
+        let mut model = UmlModel::new();
+        let bad_id = crate::diagram::DiagramId::new();
+        let src_id = crate::UmlId::new();
+        let tgt_id = crate::UmlId::new();
+
+        let mut cmd = CreateEdge::new(bad_id, src_id, tgt_id, AssociationType::Association);
+        let result = cmd.execute(&mut model);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CommandError::InvalidOperation(_))));
+    }
+
+    #[test]
+    fn create_edge_description() {
+        let cmd = CreateEdge::new(
+            crate::diagram::DiagramId::new(),
+            crate::UmlId::new(),
+            crate::UmlId::new(),
+            AssociationType::Generalization,
+        );
+        assert!(cmd.description().contains("Generalization"));
+
+        let cmd = CreateEdge::new(
+            crate::diagram::DiagramId::new(),
+            crate::UmlId::new(),
+            crate::UmlId::new(),
+            AssociationType::Dependency,
+        );
+        assert!(cmd.description().contains("Dependency"));
+    }
+
+    #[test]
+    fn create_edge_undo_then_redo() {
+        let (mut model, diagram_id, src_id, tgt_id) = setup_model_with_two_nodes();
+
+        let mut cmd = CreateEdge::new(diagram_id, src_id, tgt_id, AssociationType::Association);
+        let rel_id = cmd.relationship_id;
+        let edge_id = cmd.edge_id;
+
+        // Execute
+        cmd.execute(&mut model).unwrap();
+        assert!(model.contains(rel_id));
+        assert!(model
+            .get_diagram(diagram_id)
+            .unwrap()
+            .edges
+            .contains_key(&edge_id));
+
+        // Undo
+        cmd.undo(&mut model).unwrap();
+        assert!(!model.contains(rel_id));
+        assert!(!model
+            .get_diagram(diagram_id)
+            .unwrap()
+            .edges
+            .contains_key(&edge_id));
+
+        // Re-execute (redo)
+        cmd.execute(&mut model).unwrap();
+        assert!(model.contains(rel_id));
+        assert!(model
+            .get_diagram(diagram_id)
+            .unwrap()
+            .edges
+            .contains_key(&edge_id));
     }
 }
