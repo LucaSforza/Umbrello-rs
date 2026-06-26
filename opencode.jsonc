@@ -23,7 +23,7 @@
     },
     "reviewer": {
       "mode": "subagent",
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "deepseek/deepseek-v4-flash",
       "tools": {
         "write": true,
         "edit": true,

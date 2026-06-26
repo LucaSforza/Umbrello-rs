@@ -59,6 +59,8 @@ For every new task or feature, follow this strict handshake protocol:
   @implementer Implement the task described in docs/designs/<task-name>.md.
   ```
 
+- Tell to the implementer to commit all the changes.
+
 ### 4. Delegate to Reviewer
 
 - After the implementer reports completion (via `docs/implementations/<task-name>_done.md`), spawn the reviewer:
