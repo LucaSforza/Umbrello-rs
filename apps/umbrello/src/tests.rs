@@ -12,8 +12,8 @@ use crate::rendering::{element_color, type_display, visibility_symbol};
 use crate::tool_palette::ToolMode;
 use std::path::PathBuf;
 use uml_core::{
-    commands, Class, Command, Datatype, Diagram, DiagramKind, Enum, Interface, ModelElement,
-    Package, Point, TypeReference, UmlModel, Visibility,
+    commands, AssociationType, Class, Command, Datatype, Diagram, DiagramKind, Enum, Interface,
+    ModelElement, Package, Point, Size, TypeReference, UmlId, UmlModel, Visibility,
 };
 
 /// Helper: create an UmbrelloApp with a non-empty model.
@@ -635,4 +635,105 @@ fn dirty_flag_set_on_property_change() {
     let cmd = commands::ChangeVisibility::new(&app.model, id, Visibility::Private).unwrap();
     app.execute_command(Box::new(cmd));
     assert!(app.is_dirty);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// M19 Phase 2 — Edge Tool Palette Tests (APP-16 to APP-19, APP-25)
+// ══════════════════════════════════════════════════════════════════
+
+/// Helper: create an UmbrelloApp with a Class diagram containing two nodes.
+fn make_app_with_two_nodes() -> UmbrelloApp {
+    let mut model = UmlModel::new();
+    let cls_a = Class::new("ClassA");
+    let cls_b = Class::new("ClassB");
+    let id_a = cls_a.base.id;
+    let id_b = cls_b.base.id;
+    model.insert(ModelElement::Class(cls_a));
+    model.insert(ModelElement::Class(cls_b));
+    let d = Diagram::new("Test", DiagramKind::Class);
+    let diag_id = d.id;
+    model.add_diagram(d);
+    // Add nodes to diagram
+    let diagram_idx = model.diagrams().len() - 1;
+    let d = model.get_diagram_mut(diag_id).unwrap();
+    d.add_node(id_a, uml_core::ViewNode::new(id_a, uml_core::Rect::new(0.0, 0.0, 160.0, 60.0)));
+    d.add_node(
+        id_b,
+        uml_core::ViewNode::new(id_b, uml_core::Rect::new(200.0, 0.0, 160.0, 60.0)),
+    );
+    let mut app = UmbrelloApp::new(model, false);
+    app.active_diagram = Some(diagram_idx);
+    app
+}
+
+/// APP-16: Edge tool reports is_edge_tool() == true.
+#[test]
+fn edge_tool_is_edge_tool() {
+    assert!(ToolMode::CreateGeneralization.is_edge_tool());
+    assert!(ToolMode::CreateRealization.is_edge_tool());
+    assert!(ToolMode::CreateAssociation.is_edge_tool());
+    assert!(ToolMode::CreateAggregation.is_edge_tool());
+    assert!(ToolMode::CreateComposition.is_edge_tool());
+    assert!(ToolMode::CreateDependency.is_edge_tool());
+}
+
+/// APP-17: Edge tool is NOT a creation tool (no ghost preview, no crosshair).
+#[test]
+fn edge_tool_not_creation_tool() {
+    assert!(!ToolMode::CreateGeneralization.is_creation_tool());
+    assert!(!ToolMode::CreateRealization.is_creation_tool());
+    assert!(!ToolMode::CreateAssociation.is_creation_tool());
+    assert!(!ToolMode::CreateAggregation.is_creation_tool());
+    assert!(!ToolMode::CreateComposition.is_creation_tool());
+    assert!(!ToolMode::CreateDependency.is_creation_tool());
+}
+
+/// APP-18: Edge tool's association_type() maps correctly.
+#[test]
+fn edge_tool_association_type() {
+    assert_eq!(
+        ToolMode::CreateGeneralization.association_type(),
+        Some(AssociationType::Generalization)
+    );
+    assert_eq!(
+        ToolMode::CreateRealization.association_type(),
+        Some(AssociationType::Realization)
+    );
+    assert_eq!(
+        ToolMode::CreateAssociation.association_type(),
+        Some(AssociationType::Association)
+    );
+    assert_eq!(
+        ToolMode::CreateAggregation.association_type(),
+        Some(AssociationType::Aggregation)
+    );
+    assert_eq!(
+        ToolMode::CreateComposition.association_type(),
+        Some(AssociationType::Composition)
+    );
+    assert_eq!(ToolMode::CreateDependency.association_type(), Some(AssociationType::Dependency));
+}
+
+/// APP-19: Select is not an edge tool.
+#[test]
+fn select_not_edge_tool() {
+    assert!(!ToolMode::Select.is_edge_tool());
+    assert!(ToolMode::Select.association_type().is_none());
+}
+
+/// APP-25: place_edge returns an error when there is no active diagram.
+#[test]
+fn place_edge_no_diagram_errors() {
+    // Create app with no active diagram
+    let mut app = UmbrelloApp::new(UmlModel::new(), false);
+    // Set an edge tool (any edge tool will do)
+    app.current_tool = ToolMode::CreateGeneralization;
+    // Ensure no active diagram
+    app.active_diagram = None;
+    // Source/target IDs don't matter when there's no diagram
+    let src_id = UmlId::new();
+    let tgt_id = UmlId::new();
+    let result = app.place_edge(src_id, tgt_id);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("No active diagram"));
 }

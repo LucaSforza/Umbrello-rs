@@ -181,22 +181,49 @@ impl eframe::App for UmbrelloApp {
         if !ctx.wants_keyboard_input() {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::S)) {
                 self.current_tool = crate::tool_palette::ToolMode::Select;
+                self.preview_position = None;
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::C)) {
                 self.current_tool = crate::tool_palette::ToolMode::CreateClass;
+                self.preview_position = None;
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::I)) {
                 self.current_tool = crate::tool_palette::ToolMode::CreateInterface;
+                self.preview_position = None;
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::E)) {
                 self.current_tool = crate::tool_palette::ToolMode::CreateEnum;
+                self.preview_position = None;
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::D)) {
                 self.current_tool = crate::tool_palette::ToolMode::CreateDatatype;
+                self.preview_position = None;
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::P)) {
                 self.current_tool = crate::tool_palette::ToolMode::CreatePackage;
+                self.preview_position = None;
             }
+            // ── Edge tool keyboard shortcuts (M19) ──
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::G)) {
+                self.current_tool = crate::tool_palette::ToolMode::CreateGeneralization;
+                self.preview_position = None;
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::R)) {
+                self.current_tool = crate::tool_palette::ToolMode::CreateRealization;
+                self.preview_position = None;
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::A)) {
+                self.current_tool = crate::tool_palette::ToolMode::CreateAssociation;
+                self.preview_position = None;
+            }
+            // 'N' (without Ctrl) is for Dependency; Ctrl+N is New File, handled above.
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::N)) {
+                self.current_tool = crate::tool_palette::ToolMode::CreateDependency;
+                self.preview_position = None;
+            }
+            // Note: Aggregation and Composition have no single-key shortcut
+            // because 'C' is already used for Class and 'G' is for Generalization.
+            // Use the tool palette buttons for these.
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 if self.selected_element_id.is_some() {
                     self.selected_element_id = None;
@@ -204,6 +231,7 @@ impl eframe::App for UmbrelloApp {
                     self.status_message = "Selection cleared".into();
                 } else {
                     self.current_tool = crate::tool_palette::ToolMode::Select;
+                    self.preview_position = None;
                 }
             }
 
