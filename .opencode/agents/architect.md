@@ -69,6 +69,8 @@ For every new task or feature, follow this strict handshake protocol:
   @reviewer Review the implementation of <task-name> against docs/designs/<task-name>.md.
   ```
 
+- If you decide to split the milestone into multiple phases, spawn the reviewer only at the end of the milestone.
+
 ### 5. Handle Review Feedback (The Loop)
 
 - If the reviewer writes `docs/reviews/<task-name>_approved.md` → **Task complete.**
