@@ -737,3 +737,161 @@ fn place_edge_no_diagram_errors() {
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("No active diagram"));
 }
+
+// ══════════════════════════════════════════════════════════════════
+// M19 Phase 3 — Canvas Edge Creation Tests (APP-20 to APP-24, APP-26, APP-27)
+// ══════════════════════════════════════════════════════════════════
+
+/// APP-20: place_edge creates a Relationship in the model.
+#[test]
+fn place_edge_creates_relationship() {
+    let mut app = make_app_with_two_nodes();
+    app.current_tool = ToolMode::CreateGeneralization;
+
+    let id_a = app.model.iter().next().unwrap().0;
+    let id_b = app.model.iter().nth(1).unwrap().0;
+
+    let len_before = app.model.len();
+    let result = app.place_edge(id_a, id_b);
+    assert!(result.is_ok());
+    assert_eq!(app.model.len(), len_before + 1);
+
+    // Find the Relationship in the model
+    let rel_found = app.model.iter().any(|(_, e)| {
+        matches!(e, ModelElement::Relationship(r) if r.source_id == id_a && r.target_id == id_b)
+    });
+    assert!(rel_found, "Expected a Relationship between source and target");
+}
+
+/// APP-21: place_edge creates a ViewEdge in the active diagram.
+#[test]
+fn place_edge_creates_view_edge() {
+    let mut app = make_app_with_two_nodes();
+    app.current_tool = ToolMode::CreateGeneralization;
+
+    let id_a = app.model.iter().next().unwrap().0;
+    let id_b = app.model.iter().nth(1).unwrap().0;
+
+    let diag = &app.model.diagrams()[0];
+    let edges_before = diag.edges.len();
+
+    let result = app.place_edge(id_a, id_b);
+    assert!(result.is_ok());
+
+    let diag = &app.model.diagrams()[0];
+    assert_eq!(diag.edges.len(), edges_before + 1);
+
+    // Verify the edge references the source and target nodes
+    let has_edge = diag
+        .edges
+        .values()
+        .any(|edge| edge.source_node_id == id_a && edge.target_node_id == id_b);
+    assert!(has_edge, "Expected a ViewEdge connecting the two nodes");
+}
+
+/// APP-22: place_edge sets the dirty flag.
+#[test]
+fn place_edge_dirty_flag() {
+    let mut app = make_app_with_two_nodes();
+    app.current_tool = ToolMode::CreateAssociation;
+    app.is_dirty = false;
+
+    let id_a = app.model.iter().next().unwrap().0;
+    let id_b = app.model.iter().nth(1).unwrap().0;
+
+    let result = app.place_edge(id_a, id_b);
+    assert!(result.is_ok());
+    assert!(app.is_dirty, "Dirty flag should be set after edge creation");
+}
+
+/// APP-23: Undo after place_edge removes both the Relationship and the ViewEdge.
+#[test]
+fn place_edge_undo_removes_both() {
+    let mut app = make_app_with_two_nodes();
+    app.current_tool = ToolMode::CreateRealization;
+
+    let id_a = app.model.iter().next().unwrap().0;
+    let id_b = app.model.iter().nth(1).unwrap().0;
+
+    let result = app.place_edge(id_a, id_b);
+    assert!(result.is_ok());
+
+    let model_len_after = app.model.len();
+    let diag = &app.model.diagrams()[0];
+    let edges_after = diag.edges.len();
+
+    // Undo should remove both
+    assert!(app.history.undo(&mut app.model).is_ok());
+
+    // Verify the model lost the relationship
+    assert_eq!(app.model.len(), model_len_after - 1);
+
+    // Verify the diagram lost the edge
+    let diag = &app.model.diagrams()[0];
+    assert_eq!(diag.edges.len(), edges_after - 1);
+
+    // Verify no edge connects the two nodes
+    let any_edge = diag
+        .edges
+        .values()
+        .any(|edge| edge.source_node_id == id_a && edge.target_node_id == id_b);
+    assert!(!any_edge, "No ViewEdge should remain after undo");
+}
+
+/// APP-24: After undo → redo, the edge is fully restored.
+#[test]
+fn place_edge_undo_redo_restores() {
+    let mut app = make_app_with_two_nodes();
+    app.current_tool = ToolMode::CreateComposition;
+
+    let id_a = app.model.iter().next().unwrap().0;
+    let id_b = app.model.iter().nth(1).unwrap().0;
+
+    let result = app.place_edge(id_a, id_b);
+    assert!(result.is_ok());
+
+    let model_len_after = app.model.len();
+    let diag = &app.model.diagrams()[0];
+    let edges_after = diag.edges.len();
+
+    // Undo
+    assert!(app.history.undo(&mut app.model).is_ok());
+    assert_eq!(app.model.len(), model_len_after - 1);
+    let diag = &app.model.diagrams()[0];
+    assert_eq!(diag.edges.len(), edges_after - 1);
+
+    // Redo
+    assert!(app.history.redo(&mut app.model).is_ok());
+    assert_eq!(app.model.len(), model_len_after);
+    let diag = &app.model.diagrams()[0];
+    assert_eq!(diag.edges.len(), edges_after);
+
+    // Verify the edge is back
+    let has_edge = diag
+        .edges
+        .values()
+        .any(|edge| edge.source_node_id == id_a && edge.target_node_id == id_b);
+    assert!(has_edge, "ViewEdge should be restored after redo");
+}
+
+/// APP-26: New UmbrelloApp has drag_source_node_id: None.
+#[test]
+fn drag_source_node_id_defaults_none() {
+    let app = UmbrelloApp::new(UmlModel::new(), false);
+    assert!(app.drag_source_node_id.is_none());
+}
+
+/// APP-27: Edge tool palette labels are non-empty.
+#[test]
+fn edge_tool_labels_nonempty() {
+    for tool in &[
+        ToolMode::CreateGeneralization,
+        ToolMode::CreateRealization,
+        ToolMode::CreateAssociation,
+        ToolMode::CreateAggregation,
+        ToolMode::CreateComposition,
+        ToolMode::CreateDependency,
+    ] {
+        assert!(!tool.label().is_empty(), "Label for {tool:?} should be non-empty");
+    }
+}

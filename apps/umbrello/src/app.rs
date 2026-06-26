@@ -41,6 +41,15 @@ pub(crate) struct UmbrelloApp {
     /// Cached property-panel edit buffer for the name field.
     /// Populated when a new element is selected; flushed to RenameElement on commit.
     pub(crate) name_edit_buffer: String,
+
+    /// When an edge tool is active, this tracks the source node of a click-drag.
+    /// Set to `Some(id)` on mousedown over a node; cleared on mouseup or Escape.
+    pub(crate) drag_source_node_id: Option<UmlId>,
+
+    /// Tracks whether the primary mouse button was down in the previous frame,
+    /// used to detect edge-drag start transitions.
+    #[allow(dead_code)]
+    pub(crate) pointer_was_down: bool,
 }
 
 impl UmbrelloApp {
@@ -66,6 +75,8 @@ impl UmbrelloApp {
             preview_position: None,
             selected_element_id: None,
             name_edit_buffer: String::new(),
+            drag_source_node_id: None,
+            pointer_was_down: false,
         }
     }
 
@@ -229,6 +240,9 @@ impl eframe::App for UmbrelloApp {
                     self.selected_element_id = None;
                     self.name_edit_buffer.clear();
                     self.status_message = "Selection cleared".into();
+                } else if self.drag_source_node_id.is_some() {
+                    self.drag_source_node_id = None;
+                    self.status_message = "Edge creation cancelled".into();
                 } else {
                     self.current_tool = crate::tool_palette::ToolMode::Select;
                     self.preview_position = None;

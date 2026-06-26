@@ -51,6 +51,103 @@ impl UmbrelloApp {
         // ── Draw edges first (behind nodes) ──────────────────────────
         self.draw_edges(&diagram, ui);
 
+        // ── Rubber-band preview during edge drag ────────────────────
+        if let Some(source_id) = self.drag_source_node_id {
+            if self.current_tool.is_edge_tool() {
+                if let Some(source_node) = diagram.get_node(source_id) {
+                    if let Some(pointer_pos) = ui.ctx().pointer_latest_pos() {
+                        let src_center = egui::pos2(
+                            (source_node.bounds.x() + source_node.bounds.width() / 2.0) as f32,
+                            (source_node.bounds.y() + source_node.bounds.height() / 2.0) as f32,
+                        );
+                        let cursor = pointer_pos;
+                        let dir = cursor - src_center;
+                        let len = dir.length();
+                        if len > 1.0 {
+                            let unit = dir / len;
+                            let perp = egui::vec2(-unit.y, unit.x);
+                            let preview_color =
+                                egui::Color32::from_rgba_premultiplied(100, 100, 100, 120);
+                            let painter = ui.painter();
+
+                            match self.current_tool {
+                                ToolMode::CreateGeneralization => {
+                                    painter.line_segment(
+                                        [src_center, cursor],
+                                        egui::Stroke::new(1.5, preview_color),
+                                    );
+                                    draw_hollow_triangle(
+                                        painter,
+                                        cursor,
+                                        unit,
+                                        perp,
+                                        preview_color,
+                                    );
+                                },
+                                ToolMode::CreateRealization => {
+                                    draw_dashed_line(
+                                        painter,
+                                        src_center,
+                                        cursor,
+                                        egui::Stroke::new(1.5, preview_color),
+                                    );
+                                    draw_hollow_triangle(
+                                        painter,
+                                        cursor,
+                                        unit,
+                                        perp,
+                                        preview_color,
+                                    );
+                                },
+                                ToolMode::CreateAssociation => {
+                                    painter.line_segment(
+                                        [src_center, cursor],
+                                        egui::Stroke::new(1.0, preview_color),
+                                    );
+                                },
+                                ToolMode::CreateAggregation => {
+                                    painter.line_segment(
+                                        [src_center, cursor],
+                                        egui::Stroke::new(1.5, preview_color),
+                                    );
+                                    draw_hollow_diamond(
+                                        painter,
+                                        src_center,
+                                        unit,
+                                        perp,
+                                        preview_color,
+                                    );
+                                },
+                                ToolMode::CreateComposition => {
+                                    painter.line_segment(
+                                        [src_center, cursor],
+                                        egui::Stroke::new(1.5, preview_color),
+                                    );
+                                    draw_filled_diamond(
+                                        painter,
+                                        src_center,
+                                        unit,
+                                        perp,
+                                        preview_color,
+                                    );
+                                },
+                                ToolMode::CreateDependency => {
+                                    draw_dashed_line(
+                                        painter,
+                                        src_center,
+                                        cursor,
+                                        egui::Stroke::new(1.0, preview_color),
+                                    );
+                                    draw_open_arrow(painter, cursor, unit, perp, preview_color);
+                                },
+                                _ => {},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Draw nodes ───────────────────────────────────────────────
         let mut node_rects: Vec<(uml_core::UmlId, egui::Rect, f64, f64)> = Vec::new();
 
@@ -70,44 +167,90 @@ impl UmbrelloApp {
             node_rects.push((node.model_element_id, rect, node.bounds.x(), node.bounds.y()));
         }
 
-        // ── Handle interactions (after paint to avoid borrow conflicts) ──
-        for &(model_element_id, rect, orig_x, orig_y) in &node_rects {
-            let sense = egui::Sense::click_and_drag();
-            let response = ui.allocate_rect(rect, sense);
+        // ── Handle interactions ──
+        if self.current_tool == ToolMode::Select {
+            // ── Select mode: click-to-select + drag-to-move ──
+            for &(model_element_id, rect, orig_x, orig_y) in &node_rects {
+                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
 
-            if response.dragged() {
-                if self.drag_node_id != Some(model_element_id) {
-                    self.drag_node_id = Some(model_element_id);
-                    self.drag_start_pos = Some(egui::pos2(orig_x as f32, orig_y as f32));
+                if response.dragged() {
+                    if self.drag_node_id != Some(model_element_id) {
+                        self.drag_node_id = Some(model_element_id);
+                        self.drag_start_pos = Some(egui::pos2(orig_x as f32, orig_y as f32));
+                    }
+                    let delta = response.drag_delta();
+                    let new_pos =
+                        Point::new(orig_x + f64::from(delta.x), orig_y + f64::from(delta.y));
+                    if let Ok(cmd) =
+                        commands::MoveNode::new(&self.model, diagram_id, model_element_id, new_pos)
+                    {
+                        self.execute_command(Box::new(cmd));
+                    }
                 }
-                let delta = response.drag_delta();
-                let new_pos = Point::new(orig_x + f64::from(delta.x), orig_y + f64::from(delta.y));
-                if let Ok(cmd) =
-                    commands::MoveNode::new(&self.model, diagram_id, model_element_id, new_pos)
-                {
-                    self.execute_command(Box::new(cmd));
+                if response.clicked() {
+                    let name = self
+                        .model
+                        .get(model_element_id)
+                        .map(|e| e.name().to_string())
+                        .unwrap_or_default();
+                    self.selected_element_id = Some(model_element_id);
+                    if let Some(elem) = self.model.get(model_element_id) {
+                        self.name_edit_buffer = elem.name().to_string();
+                    }
+                    self.status_message = format!("Selected: {}", name);
+                }
+                if response.drag_stopped() {
+                    self.drag_node_id = None;
+                    self.drag_start_pos = None;
                 }
             }
-            if response.clicked() {
-                let name = self
-                    .model
-                    .get(model_element_id)
-                    .map(|e| e.name().to_string())
-                    .unwrap_or_default();
-                self.selected_element_id = Some(model_element_id);
-                if let Some(elem) = self.model.get(model_element_id) {
-                    self.name_edit_buffer = elem.name().to_string();
+        } else if self.current_tool.is_edge_tool() {
+            // ── Edge tool: drag from source node ──
+            for &(model_element_id, rect, _, _) in &node_rects {
+                let response = ui.allocate_rect(rect, egui::Sense::drag());
+                if response.dragged() && self.drag_source_node_id.is_none() {
+                    self.drag_source_node_id = Some(model_element_id);
+                    ui.ctx().request_repaint();
                 }
-                self.status_message = format!("Selected: {}", name);
             }
-            if response.drag_stopped() {
-                self.drag_node_id = None;
-                self.drag_start_pos = None;
-            }
+        } else {
+            // ── Creation tool: no node interaction ──
+            // Node creation is handled by the background click below.
         }
 
+        // ── Continuous repaint requests ──
         if self.drag_node_id.is_some() {
             ui.ctx().request_repaint();
+        }
+        if self.drag_source_node_id.is_some() && self.current_tool.is_edge_tool() {
+            ui.ctx().request_repaint();
+        }
+
+        // ── Edge drag: detect release on target node ────────
+        if self.drag_source_node_id.is_some() && self.current_tool.is_edge_tool() {
+            let released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+            if released {
+                let source_id = self.drag_source_node_id.take().unwrap();
+                if let Some(pointer_pos) = ui.ctx().pointer_latest_pos() {
+                    let mut found_target = false;
+                    for &(target_id, target_rect, _, _) in &node_rects {
+                        if target_rect.contains(pointer_pos) && target_id != source_id {
+                            if let Err(e) = self.place_edge(source_id, target_id) {
+                                self.status_message = format!("Error: {e}");
+                            } else {
+                                self.status_message = "Edge created — tool reset to Select".into();
+                            }
+                            self.current_tool = ToolMode::Select;
+                            found_target = true;
+                            break;
+                        }
+                    }
+                    if !found_target {
+                        self.status_message = "Edge creation cancelled".into();
+                    }
+                }
+                ui.ctx().request_repaint();
+            }
         }
 
         // ── Background click for creation tools ─────────────────────
@@ -149,7 +292,7 @@ impl UmbrelloApp {
         }
 
         // ── Background click to deselect (only in Select mode) ──────
-        if !self.current_tool.is_creation_tool() && self.selected_element_id.is_some() {
+        if self.current_tool == ToolMode::Select && self.selected_element_id.is_some() {
             let bg_interact = ui.interact(ui.max_rect(), ui.next_auto_id(), egui::Sense::click());
             if bg_interact.clicked() {
                 self.selected_element_id = None;

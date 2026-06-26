@@ -99,8 +99,6 @@ impl ToolMode {
     }
 
     /// Whether this tool creates edges (click-drag between nodes).
-    /// Currently unused in Phase 2 (will be used by canvas.rs in Phase 3).
-    #[allow(dead_code)]
     pub(crate) fn is_edge_tool(&self) -> bool {
         matches!(
             self,
@@ -115,8 +113,6 @@ impl ToolMode {
 
     /// Map the edge tool variant to the corresponding `AssociationType`.
     /// Returns `None` for non-edge tools (Select, node-creation tools).
-    /// Currently unused in Phase 2 (will be used by canvas.rs in Phase 3).
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn association_type(&self) -> Option<AssociationType> {
         match self {
@@ -196,8 +192,6 @@ impl UmbrelloApp {
     /// Place a new relationship edge between two nodes on the active diagram.
     /// Executes a single `CreateEdge` command (atomic, one undo step).
     /// Returns `Ok(())` if the command succeeds, or an error string otherwise.
-    /// Currently unused in Phase 2 (will be used by canvas.rs in Phase 3).
-    #[allow(dead_code)]
     pub(crate) fn place_edge(
         &mut self,
         source_node_id: UmlId,
@@ -241,6 +235,7 @@ impl UmbrelloApp {
             if ui.add(button).clicked() {
                 self.current_tool = *tool;
                 self.preview_position = None;
+                self.drag_source_node_id = None;
                 self.status_message = format!("Tool: {}", tool.label());
             }
         }
@@ -262,6 +257,7 @@ impl UmbrelloApp {
             if ui.add(button).clicked() {
                 self.current_tool = *tool;
                 self.preview_position = None;
+                self.drag_source_node_id = None;
                 self.status_message = format!("Tool: {}", tool.label());
             }
         }
