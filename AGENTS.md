@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 216 tests passing across 5 crates. The core domain model is complete (16 milestones). The GUI application (egui/eframe) renders partitioned class boxes with semantic edges, and supports full File I/O (Open, Save, Save As, New) with native dialogs, dirty-flag tracking, and keyboard shortcuts. Major gaps remain in element type coverage, XMI completeness, code generation, and GUI polish (tool palette, property editor, edge creation).
+**Current state:** 233 tests passing across 5 crates. The core domain model is complete (17 milestones). The GUI application (egui/eframe) renders partitioned class boxes with semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, and provides a tool palette for interactive element creation (click-to-place on canvas). Major gaps remain in element type coverage, XMI completeness, code generation, and GUI polish (property editor, edge creation).
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -134,7 +134,7 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 216 tests, all passing** (as of Milestone 16).
+**Total: 233 tests, all passing** (as of Milestone 17).
 
 ### By Crate
 
@@ -147,7 +147,7 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
 | `uml-io` XMI tests | 46 | `reader.rs` — parsing of Package, Class, Interface, Enum, Datatype, attributes, operations, parameters, Generalization, Association, Dependency, Abstraction/Realization; `writer.rs` — writing back to XMI; `xmi/mod.rs` — `save_xmi_to_file` / `load_xmi_from_file` convenience functions |
 | `uml-io` real corpus | 1 | Load `../test/test-COG.xmi` (a real Umbrello file), verify 18 diagrams, 70+ nodes, 57+ edges |
-| `apps/umbrello` tests | 14 | `app.rs` — visibility symbols, type display, element colors, dirty-flag tracking, file I/O (New/Open/Save round-trip) |
+| `apps/umbrello` tests | 31 | `app.rs` — visibility symbols, type display, element colors, dirty-flag tracking, file I/O (New/Open/Save round-trip), tool palette, element creation, smart naming |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
 
 ### Test Commands
@@ -274,6 +274,19 @@ cargo test -p uml-core serde_roundtrip_model_element
 - `save_xmi_to_file()` / `load_xmi_from_file()` convenience functions in `uml-io`
 - `execute_command` helper wraps `History::execute` with automatic dirty tracking
 - Zero changes to `uml-core`
+
+### M17 — Tool Palette & Interactive Element Creation
+- **233 tests** (incremental + 17 new: all in app)
+- `ToolMode` enum with 6 variants (Select, CreateClass, CreateInterface, CreateEnum, CreateDatatype, CreatePackage)
+- Vertical tool palette panel in the left sidebar with `SelectableLabel` buttons; active tool highlighted
+- Click-to-place on canvas: selecting a creation tool then clicking on the active diagram creates the element + places a `ViewNode` at the click position
+- Tool auto-resets to `Select` after successful placement (one-shot creation)
+- Smart default naming: `generate_unique_name()` scans existing names, gap-fills suffixes (`"Class_1"`, `"Class_2"`, etc.)
+- Ghost preview: semi-transparent 160×60 blue rectangle at cursor position when hovering with creation tool
+- Crosshair cursor when creation tool is active
+- Keyboard shortcuts: S=Select, C=Class, I=Interface, E=Enum, D=Datatype, P=Package, Esc=Select (only when `!ctx.wants_keyboard_input()`)
+- Element placement uses two commands (`CreateElement` + `AddNodeToDiagram`) via `execute_command()` with dirty tracking
+- Zero changes to `uml-core` or `uml-io`
 
 ---
 
@@ -606,8 +619,8 @@ The XMI reader at `crates/uml-io/src/xmi/reader.rs` (~2416 lines) currently hand
 |---------|--------------|----------------|
 | **File open dialog** | Implemented in M16 via rfd native dialog + XMI loading | ~~HIGH~~ **DONE** |
 | **File save / Save As** | Implemented in M16 via rfd native dialog + XMI writing | ~~HIGH~~ **DONE** |
+| **Tool palette** | Implemented in M17 via vertical toolbar + click-to-place on canvas | ~~HIGH~~ **DONE** |
 | **Property editor panel** | No right panel for element properties | **HIGH** — users must see/edit element details |
-| **Tool palette** | No toolbar for creating new UML elements (click-to-place) | **HIGH** — can't create new elements without it |
 | **Resize handles** | Drag corner/edge handles not implemented | **MEDIUM** — nodes fixed size (can be worked around) |
 | **Edge creation** | Click-and-drag to create relationships not implemented | **HIGH** — can't create relationships visually |
 | **Zoom controls** | No slider, fit-to-window, zoom in/out | **MEDIUM** — essential for large diagrams |
@@ -869,4 +882,4 @@ Key architecture documents in `docs/` to read before implementing:
 
 ---
 
-*Last updated: 2026-06-26 · Umbrello-RS Milestone 16*
+*Last updated: 2026-06-26 · Umbrello-RS Milestone 17*
