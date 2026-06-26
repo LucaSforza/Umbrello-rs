@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 257 tests passing across 5 crates. The core domain model is complete (18 milestones). The GUI application (egui/eframe) renders partitioned class boxes with semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, provides a tool palette for interactive element creation (click-to-place on canvas), and features a property editor panel for inspecting and modifying element properties. Major gaps remain in element type coverage, XMI completeness, and edge creation.
+**Current state:** 275 tests passing across 5 crates. The core domain model is complete (19 milestones). The GUI application (egui/eframe) renders partitioned class boxes with semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, provides a tool palette for interactive element creation (click-to-place nodes, click-drag edges), and features a property editor panel for inspecting and modifying element properties. Major gaps remain in element type coverage and XMI completeness.
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -134,20 +134,20 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 257 tests, all passing** (as of Milestone 18).
+**Total: 275 tests, all passing** (as of Milestone 19).
 
 ### By Crate
 
 | Test Suite | Count | What It Covers |
 |------------|-------|-----------------|
-| `uml-core` unit tests | 134 | `elements.rs` (element creation, serde, relationships, TypeReference), `repository.rs` (insert/remove, parent_index, cycle detection, validation, cascading cleanup), `types.rs` (enum properties, serde round-trips, uniqueness), `diagram/mod.rs` (Diagram CRUD, DiagramKind round-trip) |
+| `uml-core` unit tests | 140 | `elements.rs` (element creation, serde, relationships, TypeReference), `repository.rs` (insert/remove, parent_index, cycle detection, validation, cascading cleanup), `types.rs` (enum properties, serde round-trips, uniqueness), `diagram/mod.rs` (Diagram CRUD, DiagramKind round-trip), `undo/commands.rs` (CreateEdge command) |
 | `uml-core` id_tests | 8 | `id.rs` — UmlId generation, equality, ordering, Display, serde, UUIDv4 properties |
 | `uml-core` serde_roundtrip | 6 | External serde round-trip tests for element types |
 | `uml-core` diagram_geometry | 2 | `diagram/geometry.rs` — Point, Size, Rect construction and arithmetic |
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
 | `uml-io` XMI tests | 46 | `reader.rs` — parsing of Package, Class, Interface, Enum, Datatype, attributes, operations, parameters, Generalization, Association, Dependency, Abstraction/Realization; `writer.rs` — writing back to XMI; `xmi/mod.rs` — `save_xmi_to_file` / `load_xmi_from_file` convenience functions |
 | `uml-io` real corpus | 1 | Load `../test/test-COG.xmi` (a real Umbrello file), verify 18 diagrams, 70+ nodes, 57+ edges |
-| `apps/umbrello` tests | 46 | `tests.rs` — visibility symbols, type display, element colors, dirty-flag tracking, file I/O (New/Open/Save round-trip), tool palette, element creation, smart naming, selection tracking, property editor commands |
+| `apps/umbrello` tests | 58 | `tests.rs` — visibility symbols, type display, element colors, dirty-flag tracking, file I/O (New/Open/Save round-trip), tool palette, element creation, edge creation, smart naming, selection tracking, property editor commands |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
 
 ### Test Commands
@@ -302,6 +302,20 @@ cargo test -p uml-core serde_roundtrip_model_element
   - Documentation multiline text area → `ChangeDocumentation` command (commit on focus loss)
   - Read-only classifier details: lists attributes and operations with visibility symbols and type names
 - `visibility_name()` helper added to rendering module
+- Zero changes to `uml-io` or `uml-codegen`
+
+### M19 — Interactive Edge Creation
+- **275 tests** (incremental + 18 new: 6 uml-core, 12 app)
+- 1 new undo command: `CreateEdge` — atomically creates a `Relationship` model element + `ViewEdge` diagram entry; follows the snapshot pattern for undo/redo
+- 6 new `ToolMode` variants: `CreateGeneralization`, `CreateRealization`, `CreateAssociation`, `CreateAggregation`, `CreateComposition`, `CreateDependency`
+- `is_edge_tool()` and `association_type()` helpers on `ToolMode`; `is_creation_tool()` narrowed to node-creation tools only
+- `place_edge()` method on `UmbrelloApp` — wraps `CreateEdge` command with dirty tracking
+- Vertical tool palette extended: separator + "Edges" label + 6 edge-type `SelectableLabel` buttons
+- Click-drag edge creation on canvas: mousedown on source node → rubber-band preview (semi-transparent line + correct arrowhead for all 6 types) → mouseup on target node creates the edge
+- One-shot tool reset to `Select` after successful edge placement (same pattern as node creation)
+- Escape cancels edge drag without resetting tool; second Escape resets to Select
+- Keyboard shortcuts: G=Generalization, R=Realization, A=Association, N=Dependency (only when `!ctx.wants_keyboard_input()`)
+- Rubber-band preview uses existing arrowhead drawing functions from `rendering.rs` with semi-transparent color `rgba(100, 100, 100, 120)`
 - Zero changes to `uml-io` or `uml-codegen`
 
 ---
@@ -479,7 +493,8 @@ History {
 // Methods: execute, undo, redo, can_undo, can_redo, set_disabled, clear
 
 // Commands: CreateElement, DeleteElement, RenameElement, MoveElement,
-//           AddNodeToDiagram, RemoveNodeFromDiagram, MoveNode, ResizeNode
+//           AddNodeToDiagram, RemoveNodeFromDiagram, MoveNode, ResizeNode,
+//           CreateEdge
 ```
 
 ---
@@ -638,7 +653,7 @@ The XMI reader at `crates/uml-io/src/xmi/reader.rs` (~2416 lines) currently hand
 | **Tool palette** | Implemented in M17 via vertical toolbar + click-to-place on canvas | ~~HIGH~~ **DONE** |
 | **Property editor panel** | Implemented in M18 via right-side panel with name, visibility, flags, documentation, classifier details | ~~HIGH~~ **DONE** |
 | **Resize handles** | Drag corner/edge handles not implemented | **MEDIUM** — nodes fixed size (can be worked around) |
-| **Edge creation** | Click-and-drag to create relationships not implemented | **HIGH** — can't create relationships visually |
+| **Edge creation** | Click-and-drag to create relationships implemented in M19 | ~~HIGH~~ **DONE** |
 | **Zoom controls** | No slider, fit-to-window, zoom in/out | **MEDIUM** — essential for large diagrams |
 | **Pan/scroll** | Middle-button drag to pan not implemented | **MEDIUM** — can't navigate large canvases |
 | **Multiple diagram tabs** | No tabbed interface for switching diagrams | **MEDIUM** — can only view one diagram at a time |
@@ -898,4 +913,4 @@ Key architecture documents in `docs/` to read before implementing:
 
 ---
 
-*Last updated: 2026-06-26 · Umbrello-RS Milestone 18*
+*Last updated: 2026-06-26 · Umbrello-RS Milestone 19*
