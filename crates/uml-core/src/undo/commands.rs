@@ -373,17 +373,10 @@ impl ChangeDocumentation {
     /// # Errors
     ///
     /// Returns `CommandError::ElementNotFound` if the element does not exist.
-    pub fn new(
-        model: &UmlModel,
-        id: UmlId,
-        documentation: String,
-    ) -> Result<Self, CommandError> {
+    pub fn new(model: &UmlModel, id: UmlId, documentation: String) -> Result<Self, CommandError> {
         let elem = model.get(id).ok_or(CommandError::ElementNotFound(id))?;
         let old_documentation = elem.base().documentation.clone();
-        let desc = format!(
-            "Change documentation of '{}'",
-            elem.name(),
-        );
+        let desc = format!("Change documentation of '{}'", elem.name(),);
         Ok(Self {
             element_id: id,
             old_documentation,
@@ -398,7 +391,9 @@ impl Command for ChangeDocumentation {
         let elem = model
             .get_mut(self.element_id)
             .ok_or(CommandError::ElementNotFound(self.element_id))?;
-        elem.base_mut().documentation.clone_from(&self.new_documentation);
+        elem.base_mut()
+            .documentation
+            .clone_from(&self.new_documentation);
         Ok(())
     }
 
@@ -406,7 +401,9 @@ impl Command for ChangeDocumentation {
         let elem = model
             .get_mut(self.element_id)
             .ok_or(CommandError::ElementNotFound(self.element_id))?;
-        elem.base_mut().documentation.clone_from(&self.old_documentation);
+        elem.base_mut()
+            .documentation
+            .clone_from(&self.old_documentation);
         Ok(())
     }
 
