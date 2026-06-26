@@ -94,6 +94,10 @@ impl UmbrelloApp {
                     .get(model_element_id)
                     .map(|e| e.name().to_string())
                     .unwrap_or_default();
+                self.selected_element_id = Some(model_element_id);
+                if let Some(elem) = self.model.get(model_element_id) {
+                    self.name_edit_buffer = elem.name().to_string();
+                }
                 self.status_message = format!("Selected: {}", name);
             }
             if response.drag_stopped() {
@@ -141,6 +145,16 @@ impl UmbrelloApp {
                 if bg_response.clicked() {
                     self.status_message = "No active diagram. Create a diagram first.".into();
                 }
+            }
+        }
+
+        // ── Background click to deselect (only in Select mode) ──────
+        if !self.current_tool.is_creation_tool() && self.selected_element_id.is_some() {
+            let bg_interact = ui.interact(ui.max_rect(), ui.next_auto_id(), egui::Sense::click());
+            if bg_interact.clicked() {
+                self.selected_element_id = None;
+                self.name_edit_buffer.clear();
+                self.status_message = "Selection cleared".into();
             }
         }
 
@@ -411,6 +425,16 @@ impl UmbrelloApp {
                     egui::Color32::BLACK,
                 );
             },
+        }
+
+        // Selection highlight border (draw on top of normal border)
+        if self.selected_element_id == Some(node.model_element_id) {
+            painter.rect_stroke(
+                full_rect,
+                4.0,
+                egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)),
+                egui::StrokeKind::Inside,
+            );
         }
     }
 

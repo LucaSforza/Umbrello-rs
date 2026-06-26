@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use uml_core::{Command, UmlModel};
+use uml_core::{Command, UmlId, UmlModel};
 
 /// The Umbrello application state.
 pub(crate) struct UmbrelloApp {
@@ -33,6 +33,14 @@ pub(crate) struct UmbrelloApp {
     pub(crate) name_counters: HashMap<String, u64>,
     /// Ghost-rectangle position for creation preview (in canvas coordinates).
     pub(crate) preview_position: Option<uml_core::Point>,
+
+    /// The currently selected element on the canvas, if any.
+    /// Set by clicking a node; cleared by clicking background or pressing Escape.
+    pub(crate) selected_element_id: Option<UmlId>,
+
+    /// Cached property-panel edit buffer for the name field.
+    /// Populated when a new element is selected; flushed to RenameElement on commit.
+    pub(crate) name_edit_buffer: String,
 }
 
 impl UmbrelloApp {
@@ -56,6 +64,8 @@ impl UmbrelloApp {
             current_tool: crate::tool_palette::ToolMode::Select,
             name_counters: HashMap::new(),
             preview_position: None,
+            selected_element_id: None,
+            name_edit_buffer: String::new(),
         }
     }
 
@@ -182,7 +192,13 @@ impl eframe::App for UmbrelloApp {
                 self.current_tool = crate::tool_palette::ToolMode::CreatePackage;
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                self.current_tool = crate::tool_palette::ToolMode::Select;
+                if self.selected_element_id.is_some() {
+                    self.selected_element_id = None;
+                    self.name_edit_buffer.clear();
+                    self.status_message = "Selection cleared".into();
+                } else {
+                    self.current_tool = crate::tool_palette::ToolMode::Select;
+                }
             }
 
             // Update status message if tool changed via keyboard shortcut

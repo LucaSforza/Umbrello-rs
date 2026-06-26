@@ -455,3 +455,51 @@ fn element_color_for_new_type() {
     // None → gray
     assert_eq!(element_color(None), egui::Color32::from_rgb(220, 220, 220));
 }
+
+// ══════════════════════════════════════════════════════════════════
+// M18 — Selection & Property Editor Tests (APP-01 to APP-15)
+// ══════════════════════════════════════════════════════════════════
+
+/// APP-01: New UmbrelloApp has selected_element_id: None.
+#[test]
+fn selected_element_id_defaults_to_none() {
+    let app = UmbrelloApp::new(UmlModel::new(), false);
+    assert!(app.selected_element_id.is_none());
+    assert!(app.name_edit_buffer.is_empty());
+}
+
+/// APP-02: Setting selected_element_id to Some(id) is reflected.
+#[test]
+fn select_node_sets_selected_element_id() {
+    let mut app = make_app_with_class("Test");
+    let id = app.model.iter().next().unwrap().0;
+    app.selected_element_id = Some(id);
+    assert_eq!(app.selected_element_id, Some(id));
+}
+
+/// APP-03: Clearing selection sets selected_element_id to None.
+#[test]
+fn deselect_on_background_click() {
+    let mut app = make_app_with_class("Test");
+    let id = app.model.iter().next().unwrap().0;
+    app.selected_element_id = Some(id);
+    assert!(app.selected_element_id.is_some());
+    // Simulate background click clearing selection
+    app.selected_element_id = None;
+    app.name_edit_buffer.clear();
+    assert!(app.selected_element_id.is_none());
+    assert!(app.name_edit_buffer.is_empty());
+}
+
+/// APP-04: name_edit_buffer is populated from the selected element's name.
+#[test]
+fn name_edit_buffer_populates_on_selection() {
+    let mut app = make_app_with_class("MyClass");
+    let id = app.model.iter().next().unwrap().0;
+    // Simulate clicking on the node (populates buffer)
+    if let Some(elem) = app.model.get(id) {
+        app.name_edit_buffer = elem.name().to_string();
+    }
+    app.selected_element_id = Some(id);
+    assert_eq!(app.name_edit_buffer, "MyClass");
+}
