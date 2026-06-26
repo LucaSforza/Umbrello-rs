@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 275 tests passing across 5 crates. The core domain model is complete (19 milestones). The GUI application (egui/eframe) renders partitioned class boxes with semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, provides a tool palette for interactive element creation (click-to-place nodes, click-drag edges), and features a property editor panel for inspecting and modifying element properties. Major gaps remain in element type coverage and XMI completeness.
+**Current state:** 312 tests passing across 5 crates. The core domain model covers 8 UML element types (20 milestones). The GUI application (egui/eframe) renders partitioned class boxes and semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, provides a tool palette for interactive element creation (click-to-place nodes for 7 element types, click-drag for 6 relationship types), and features a property editor panel. The latest milestone (M20) added Actor and UseCase element types with stick-figure/ellipse rendering and full XMI round-trip support for real-world Use Case diagrams.
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -134,20 +134,21 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 275 tests, all passing** (as of Milestone 19).
+**Total: 312 tests, all passing** (as of Milestone 20).
 
 ### By Crate
 
 | Test Suite | Count | What It Covers |
 |------------|-------|-----------------|
-| `uml-core` unit tests | 140 | `elements.rs` (element creation, serde, relationships, TypeReference), `repository.rs` (insert/remove, parent_index, cycle detection, validation, cascading cleanup), `types.rs` (enum properties, serde round-trips, uniqueness), `diagram/mod.rs` (Diagram CRUD, DiagramKind round-trip), `undo/commands.rs` (CreateEdge command) |
+| `uml-core` unit tests | 153 | `elements.rs` (element creation, serde, relationships, TypeReference, Actor, UseCase), `repository.rs` (insert/remove, parent_index, cycle detection, validation, cascading cleanup), `types.rs` (enum properties, serde round-trips, uniqueness), `diagram/mod.rs` (Diagram CRUD, DiagramKind round-trip), `undo/commands.rs` (CreateEdge command) |
 | `uml-core` id_tests | 8 | `id.rs` — UmlId generation, equality, ordering, Display, serde, UUIDv4 properties |
 | `uml-core` serde_roundtrip | 6 | External serde round-trip tests for element types |
 | `uml-core` diagram_geometry | 2 | `diagram/geometry.rs` — Point, Size, Rect construction and arithmetic |
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
-| `uml-io` XMI tests | 46 | `reader.rs` — parsing of Package, Class, Interface, Enum, Datatype, attributes, operations, parameters, Generalization, Association, Dependency, Abstraction/Realization; `writer.rs` — writing back to XMI; `xmi/mod.rs` — `save_xmi_to_file` / `load_xmi_from_file` convenience functions |
+| `uml-core` actor_usecase | 9 | `elements.rs` — Actor and UseCase struct creation, NamedElement impl, ModelElement dispatch, serde round-trip, XMI round-trip, non-classifier property checks |
+| `uml-io` XMI tests | 61 | `reader.rs` — parsing of Package, Class, Interface, Enum, Datatype, Actor, UseCase, attributes, operations, parameters, Generalization, Association, Dependency, Abstraction/Realization; `writer.rs` — writing back to XMI; `xmi/mod.rs` — `save_xmi_to_file` / `load_xmi_from_file` convenience functions |
 | `uml-io` real corpus | 1 | Load `../test/test-COG.xmi` (a real Umbrello file), verify 18 diagrams, 70+ nodes, 57+ edges |
-| `apps/umbrello` tests | 58 | `tests.rs` — visibility symbols, type display, element colors, dirty-flag tracking, file I/O (New/Open/Save round-trip), tool palette, element creation, edge creation, smart naming, selection tracking, property editor commands |
+| `apps/umbrello` tests | 73 | `tests.rs` — visibility symbols, type display, element colors, dirty-flag tracking, file I/O (New/Open/Save round-trip), tool palette, element creation, edge creation, smart naming, selection tracking, property editor commands, Actor/UseCase element creation |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
 
 ### Test Commands
@@ -317,6 +318,20 @@ cargo test -p uml-core serde_roundtrip_model_element
 - Keyboard shortcuts: G=Generalization, R=Realization, A=Association, N=Dependency (only when `!ctx.wants_keyboard_input()`)
 - Rubber-band preview uses existing arrowhead drawing functions from `rendering.rs` with semi-transparent color `rgba(100, 100, 100, 120)`
 - Zero changes to `uml-io` or `uml-codegen`
+
+### M20 — Actor & UseCase Element Types
+- **312 tests** (incremental + 37 new across all 3 crates)
+- 2 new domain types: `Actor { base: ElementBase }` and `UseCase { base: ElementBase }` — bare-identity non-classifier, non-container types
+- 2 new `ModelElement` variants with full match-arm propagation (base, base_mut, object_type)
+- XMI reader: `parse_simple_element()` + `parse_actor()`/`parse_usecase()` dispatched in both `Event::Start` and `Event::Empty` arms
+- XMI writer: `write_simple_element()` helper, `write_element()` dispatch, `guess_widget_type()` → actorwidget/usecasewidget
+- Real corpus test: `test-DUC.xmi` (Restaurant use case diagram) — 4 actors + 9 use cases parsed with full relationship resolution
+- GUI: stick-figure icon for Actor (circle head + body + arms + legs), ellipse-with-centered-name for UseCase
+- 2 new tool palette buttons (🧑 Actor, ⬭ UseCase); keyboard shortcuts T and U
+- `element_color()`: light orange for Actor, light coral for UseCase
+- Existing undo/redo commands handle both types generically (no new commands needed)
+- Widget type detection in XMI extension already handled actorwidget/usecasewidget (no changes needed)
+- Zero changes to `uml-codegen`
 
 ---
 
@@ -517,8 +532,8 @@ These element types are defined in the `ObjectType` enum but have no correspondi
 
 | Element | Required For | Estimated Work | Status |
 |---------|-------------|----------------|--------|
-| **Actor** | Use case diagrams | Add struct + ModelElement variant + XMI reader/writer | NOT STARTED |
-| **UseCase** | Use case diagrams | Add struct + ModelElement variant + XMI reader/writer | NOT STARTED |
+| **Actor** | Use case diagrams | Add struct + ModelElement variant + XMI reader/writer | **DONE (M20)** |
+| **UseCase** | Use case diagrams | Add struct + ModelElement variant + XMI reader/writer | **DONE (M20)** |
 | **Component** | Component diagrams | Add struct + ModelElement variant + XMI reader/writer | NOT STARTED |
 | **Node** | Deployment diagrams | Add struct + ModelElement variant + XMI reader/writer | NOT STARTED |
 | **Artifact** | Deployment/component diagrams | Add struct + ModelElement variant + XMI reader/writer | NOT STARTED |
@@ -554,7 +569,7 @@ enum ModelElement {
 
 | Feature | Current State | Required Work |
 |---------|--------------|---------------|
-| **Actor/UseCase element parsing** | Reader skips `UML:Actor`, `UML:UseCase` XML elements | Add parser cases + struct creation |
+| **Actor/UseCase element parsing** | **DONE (M20)** — `UML:Actor` and `UML:UseCase` elements now parsed | Actor + UseCase struct + reader/writer implemented |
 | **Note widget parsing** | Notes in XMI diagrams not mapped | Add note widget type + parsing |
 | **Sequence diagram messages** | `UML:Message` elements ignored | Add message relationship type + parsing |
 | **State diagram elements** | `UML:StateVertex`, `UML:StateMachine`, `UML:Transition` not parsed | Add state machine types + parsing |
@@ -577,7 +592,8 @@ The XMI reader at `crates/uml-io/src/xmi/reader.rs` (~2416 lines) currently hand
 - Lines 2000+: Diagram, ViewNode, ViewEdge parsing
 
 **Not handled:**
-- `UML:Actor`, `UML:UseCase`, `UML:Component`, `UML:Node`, `UML:Artifact` — not parsed (silently skipped)
+- `UML:Actor`, `UML:UseCase` — **DONE (M20)**
+- `UML:Component`, `UML:Node`, `UML:Artifact` — not parsed (silently skipped)
 - `UML:TaggedValue` — stereotype properties not parsed
 - `UML:Stereotype` — stereotype definitions not parsed
 - `UML:Message` — sequence diagram messages not parsed
@@ -910,7 +926,8 @@ Key architecture documents in `docs/` to read before implementing:
 | `workspace_consolidation_v2.md` | Crate boundaries, 21→5 consolidation | Crate structure questions |
 | `testing_strategy.md` | Test philosophy, property-based testing plans | Adding tests |
 | `phase1_architecture_audit.md` | Initial architecture decisions and rationale | Understanding design choices |
+| `designs/milestone_20.md` | Actor & UseCase domain types, XMI reader/writer, stick-figure rendering, tool palette | Adding new simple element types |
 
 ---
 
-*Last updated: 2026-06-26 · Umbrello-RS Milestone 19*
+*Last updated: 2026-06-26 · Umbrello-RS Milestone 20*
