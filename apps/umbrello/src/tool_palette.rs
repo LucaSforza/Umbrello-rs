@@ -7,8 +7,8 @@
 
 use crate::app::UmbrelloApp;
 use uml_core::{
-    commands, AssociationType, Class, Datatype, Enum, Interface, ModelElement, Package, Point,
-    Size, UmlId,
+    commands, Actor, AssociationType, Class, Datatype, Enum, Interface, ModelElement, Package,
+    Point, Size, UmlId, UseCase,
 };
 
 /// The active tool in the tool palette.
@@ -26,6 +26,11 @@ pub(crate) enum ToolMode {
     CreateDatatype,
     /// Create a new Package element on click.
     CreatePackage,
+    // ── Node-creation tools (M20) ──
+    /// Create a new Actor element on click.
+    CreateActor,
+    /// Create a new UseCase element on click.
+    CreateUseCase,
     // ── Edge-creation tools (M19) ──
     /// Create a Generalization (hollow triangle arrowhead).
     CreateGeneralization,
@@ -51,6 +56,8 @@ impl ToolMode {
             Self::CreateEnum => "🔢 Enum",
             Self::CreateDatatype => "📋 Datatype",
             Self::CreatePackage => "📁 Package",
+            Self::CreateActor => "🧑 Actor",
+            Self::CreateUseCase => "⬭ UseCase",
             Self::CreateGeneralization => "△ Generalization",
             Self::CreateRealization => "△ Realization",
             Self::CreateAssociation => "— Association",
@@ -70,6 +77,8 @@ impl ToolMode {
             Self::CreateEnum => "Create an Enum (E)",
             Self::CreateDatatype => "Create a Datatype (D)",
             Self::CreatePackage => "Create a Package (P)",
+            Self::CreateActor => "Create an Actor (T)",
+            Self::CreateUseCase => "Create a UseCase (U)",
             Self::CreateGeneralization => {
                 "Create a Generalization (G) — click-drag from subclass to superclass"
             },
@@ -95,6 +104,8 @@ impl ToolMode {
                 | Self::CreateEnum
                 | Self::CreateDatatype
                 | Self::CreatePackage
+                | Self::CreateActor
+                | Self::CreateUseCase
         )
     }
 
@@ -153,6 +164,14 @@ impl UmbrelloApp {
             ToolMode::CreatePackage => {
                 let name = self.generate_unique_name("Package");
                 ModelElement::Package(Package::new(&name))
+            },
+            ToolMode::CreateActor => {
+                let name = self.generate_unique_name("Actor");
+                ModelElement::Actor(Actor::new(&name))
+            },
+            ToolMode::CreateUseCase => {
+                let name = self.generate_unique_name("UseCase");
+                ModelElement::UseCase(UseCase::new(&name))
             },
             ToolMode::Select
             | ToolMode::CreateGeneralization
@@ -229,6 +248,8 @@ impl UmbrelloApp {
             ToolMode::CreateEnum,
             ToolMode::CreateDatatype,
             ToolMode::CreatePackage,
+            ToolMode::CreateActor,
+            ToolMode::CreateUseCase,
         ] {
             let selected = self.current_tool == *tool;
             let button = egui::SelectableLabel::new(selected, tool.label());

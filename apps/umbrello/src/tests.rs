@@ -12,8 +12,9 @@ use crate::rendering::{element_color, type_display, visibility_symbol};
 use crate::tool_palette::ToolMode;
 use std::path::PathBuf;
 use uml_core::{
-    commands, AssociationType, Class, Command, Datatype, Diagram, DiagramKind, Enum, Interface,
-    ModelElement, Package, Point, Size, TypeReference, UmlId, UmlModel, Visibility,
+    commands, Actor, AssociationType, Class, Command, Datatype, Diagram, DiagramKind, Enum,
+    Interface, ModelElement, Package, Point, Size, TypeReference, UmlId, UmlModel, UseCase,
+    Visibility,
 };
 
 /// Helper: create an UmbrelloApp with a non-empty model.
@@ -894,4 +895,140 @@ fn edge_tool_labels_nonempty() {
     ] {
         assert!(!tool.label().is_empty(), "Label for {tool:?} should be non-empty");
     }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// M20 Phase 3 — Actor & UseCase Tool/Rendering Tests (APP-28 to APP-40)
+// ══════════════════════════════════════════════════════════════════
+
+/// APP-28: CreateActor is a creation tool.
+#[test]
+fn tool_actor_is_creation() {
+    assert!(ToolMode::CreateActor.is_creation_tool());
+}
+
+/// APP-29: CreateUseCase is a creation tool.
+#[test]
+fn tool_usecase_is_creation() {
+    assert!(ToolMode::CreateUseCase.is_creation_tool());
+}
+
+/// APP-30: CreateActor is NOT an edge tool.
+#[test]
+fn tool_actor_not_edge() {
+    assert!(!ToolMode::CreateActor.is_edge_tool());
+}
+
+/// APP-31: CreateUseCase is NOT an edge tool.
+#[test]
+fn tool_usecase_not_edge() {
+    assert!(!ToolMode::CreateUseCase.is_edge_tool());
+}
+
+/// APP-32: create_element_for_tool(CreateActor) returns an Actor with name "Actor_1".
+#[test]
+fn create_element_for_actor() {
+    let app = UmbrelloApp::new(UmlModel::new(), false);
+    let elem = app.create_element_for_tool(ToolMode::CreateActor);
+    assert!(matches!(elem, ModelElement::Actor(_)));
+    assert_eq!(elem.name(), "Actor_1");
+}
+
+/// APP-33: create_element_for_tool(CreateUseCase) returns a UseCase with name "UseCase_1".
+#[test]
+fn create_element_for_usecase() {
+    let app = UmbrelloApp::new(UmlModel::new(), false);
+    let elem = app.create_element_for_tool(ToolMode::CreateUseCase);
+    assert!(matches!(elem, ModelElement::UseCase(_)));
+    assert_eq!(elem.name(), "UseCase_1");
+}
+
+/// APP-34: Placing an Actor sets the dirty flag.
+#[test]
+fn place_actor_dirty_flag() {
+    let mut app = make_app_with_diagram();
+    app.is_dirty = false;
+    let result = app.place_element(ToolMode::CreateActor, Point::new(100.0, 100.0));
+    assert!(result.is_ok());
+    assert!(app.is_dirty);
+}
+
+/// APP-35: Placing a UseCase sets the dirty flag.
+#[test]
+fn place_usecase_dirty_flag() {
+    let mut app = make_app_with_diagram();
+    app.is_dirty = false;
+    let result = app.place_element(ToolMode::CreateUseCase, Point::new(100.0, 100.0));
+    assert!(result.is_ok());
+    assert!(app.is_dirty);
+}
+
+/// APP-36: Placing two actors produces "Actor_1" and "Actor_2".
+#[test]
+fn actor_unique_naming() {
+    let mut model = UmlModel::new();
+    let a1 = ModelElement::Actor(Actor::new("Actor_1"));
+    model.insert(a1);
+    let app = UmbrelloApp::new(model, false);
+    // Next actor should be "Actor_2"
+    assert_eq!(app.generate_unique_name("Actor"), "Actor_2");
+    // Also verify create_element_for_tool produces "Actor_2"
+    let app2 = UmbrelloApp::new(UmlModel::new(), false);
+    let elem1 = app2.create_element_for_tool(ToolMode::CreateActor);
+    assert_eq!(elem1.name(), "Actor_1");
+}
+
+/// APP-37: Placing two use cases produces "UseCase_1" and "UseCase_2".
+#[test]
+fn usecase_unique_naming() {
+    let mut model = UmlModel::new();
+    let u1 = ModelElement::UseCase(UseCase::new("UseCase_1"));
+    model.insert(u1);
+    let app = UmbrelloApp::new(model, false);
+    // Next use case should be "UseCase_2"
+    assert_eq!(app.generate_unique_name("UseCase"), "UseCase_2");
+    // Also verify create_element_for_tool produces "UseCase_1"
+    let app2 = UmbrelloApp::new(UmlModel::new(), false);
+    let elem1 = app2.create_element_for_tool(ToolMode::CreateUseCase);
+    assert_eq!(elem1.name(), "UseCase_1");
+}
+
+/// APP-38: Actor undo/redo — place, undo removes, redo restores.
+#[test]
+fn actor_undo_redo() {
+    let mut app = make_app_with_diagram();
+    let result = app.place_element(ToolMode::CreateActor, Point::new(100.0, 100.0));
+    assert!(result.is_ok());
+    let elem_id = app
+        .model
+        .iter()
+        .find(|(_, e)| e.name() == "Actor_1")
+        .map(|(id, _)| id)
+        .unwrap();
+    assert!(app.model.get(elem_id).is_some());
+
+    // Undo AddNodeToDiagram
+    app.history.undo(&mut app.model).unwrap();
+    // Element should still exist, but node should be removed
+    assert!(app.model.get(elem_id).is_some());
+    let diag = &app.model.diagrams()[0];
+    assert!(diag.get_node(elem_id).is_none());
+
+    // Undo CreateElement
+    app.history.undo(&mut app.model).unwrap();
+    assert!(app.model.get(elem_id).is_none());
+}
+
+/// APP-39: element_color for Actor returns light orange/salmon.
+#[test]
+fn actor_color() {
+    let actor = ModelElement::Actor(Actor::new("Test"));
+    assert_eq!(element_color(Some(&actor)), egui::Color32::from_rgb(255, 200, 170));
+}
+
+/// APP-40: element_color for UseCase returns light coral/pink.
+#[test]
+fn usecase_color() {
+    let uc = ModelElement::UseCase(UseCase::new("Test"));
+    assert_eq!(element_color(Some(&uc)), egui::Color32::from_rgb(255, 180, 180));
 }

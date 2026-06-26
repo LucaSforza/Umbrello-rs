@@ -14,6 +14,9 @@ pub(crate) fn element_color(elem: Option<&ModelElement>) -> egui::Color32 {
         Some(ModelElement::Enum(_)) => egui::Color32::from_rgb(255, 210, 180),
         Some(ModelElement::Datatype(_)) => egui::Color32::from_rgb(210, 180, 255),
         Some(ModelElement::Package(_)) => egui::Color32::from_rgb(255, 255, 200),
+        // ── M20: Actor & UseCase ──
+        Some(ModelElement::Actor(_)) => egui::Color32::from_rgb(255, 200, 170), // light orange/salmon
+        Some(ModelElement::UseCase(_)) => egui::Color32::from_rgb(255, 180, 180), // light coral/pink
         _ => egui::Color32::from_rgb(220, 220, 220),
     }
 }

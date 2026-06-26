@@ -231,6 +231,18 @@ impl eframe::App for UmbrelloApp {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::N)) {
                 self.current_tool = crate::tool_palette::ToolMode::CreateDependency;
                 self.preview_position = None;
+                self.drag_source_node_id = None;
+            }
+            // ── Actor (T) & UseCase (U) keyboard shortcuts (M20) ──
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::T)) {
+                self.current_tool = crate::tool_palette::ToolMode::CreateActor;
+                self.preview_position = None;
+                self.drag_source_node_id = None;
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::U)) {
+                self.current_tool = crate::tool_palette::ToolMode::CreateUseCase;
+                self.preview_position = None;
+                self.drag_source_node_id = None;
             }
             // Note: Aggregation and Composition have no single-key shortcut
             // because 'C' is already used for Class and 'G' is for Generalization.

@@ -558,6 +558,69 @@ impl UmbrelloApp {
                     egui::StrokeKind::Inside,
                 );
             },
+            Some(ModelElement::Actor(actor)) => {
+                // ── Stick-figure icon ──
+                let cx = full_rect.center().x;
+                let top = full_rect.top() + 4.0;
+                let stick_color = egui::Color32::from_gray(60);
+
+                // Head (circle)
+                let head_center = egui::pos2(cx, top + 6.0);
+                painter.circle_filled(head_center, 5.0, stick_color);
+
+                // Body (vertical line from below head)
+                let body_top = egui::pos2(cx, top + 12.0);
+                let body_bottom = egui::pos2(cx, top + 28.0);
+                painter.line_segment([body_top, body_bottom], egui::Stroke::new(1.5, stick_color));
+
+                // Arms (horizontal line at shoulder level)
+                let shoulder_y = top + 16.0;
+                painter.line_segment(
+                    [
+                        egui::pos2(cx - 8.0, shoulder_y),
+                        egui::pos2(cx + 8.0, shoulder_y),
+                    ],
+                    egui::Stroke::new(1.5, stick_color),
+                );
+
+                // Left leg
+                painter.line_segment(
+                    [body_bottom, egui::pos2(cx - 6.0, top + 36.0)],
+                    egui::Stroke::new(1.5, stick_color),
+                );
+                // Right leg
+                painter.line_segment(
+                    [body_bottom, egui::pos2(cx + 6.0, top + 36.0)],
+                    egui::Stroke::new(1.5, stick_color),
+                );
+
+                // Name below the stick figure
+                painter.text(
+                    egui::pos2(cx, top + 40.0),
+                    egui::Align2::CENTER_TOP,
+                    &actor.base.name,
+                    name_font.clone(),
+                    egui::Color32::BLACK,
+                );
+            },
+            Some(ModelElement::UseCase(uc)) => {
+                // ── Ellipse with centered name ──
+                let ellipse_color = egui::Color32::from_gray(60);
+                let stroke = egui::Stroke::new(1.5, ellipse_color);
+                let inset = egui::vec2(6.0, 8.0);
+                let ellipse_rect = full_rect.shrink2(inset);
+                let corner_radius = (ellipse_rect.height() / 2.0).min(ellipse_rect.width() / 2.0);
+                painter.rect_stroke(ellipse_rect, corner_radius, stroke, egui::StrokeKind::Inside);
+
+                // Name centered inside the ellipse
+                painter.text(
+                    ellipse_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &uc.base.name,
+                    name_font.clone(),
+                    egui::Color32::BLACK,
+                );
+            },
             _ => {
                 let name = elem.map(|e| e.name().to_string()).unwrap_or_default();
                 painter.text(
