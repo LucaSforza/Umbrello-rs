@@ -3,6 +3,7 @@
 use crate::elements::ModelElement;
 use crate::id::UmlId;
 use crate::repository::UmlModel;
+use crate::types::Visibility;
 
 use super::{Command, CommandError};
 
@@ -219,6 +220,193 @@ impl Command for MoveElement {
                 .add_to_package(from, self.element_id)
                 .map_err(CommandError::Model)?;
         }
+        Ok(())
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+// ─── Property editing commands ────────────────────────────────────
+
+/// Command to change an element's visibility level.
+#[derive(Debug)]
+pub struct ChangeVisibility {
+    element_id: UmlId,
+    old_visibility: Visibility,
+    new_visibility: Visibility,
+    description: String,
+}
+
+impl ChangeVisibility {
+    /// Create a command that will change the visibility of the element.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommandError::ElementNotFound` if the element does not exist.
+    pub fn new(model: &UmlModel, id: UmlId, visibility: Visibility) -> Result<Self, CommandError> {
+        let elem = model.get(id).ok_or(CommandError::ElementNotFound(id))?;
+        let old_visibility = elem.base().visibility;
+        let desc = format!(
+            "Change visibility of '{}': {} → {}",
+            elem.name(),
+            old_visibility.as_str(),
+            visibility.as_str(),
+        );
+        Ok(Self {
+            element_id: id,
+            old_visibility,
+            new_visibility: visibility,
+            description: desc,
+        })
+    }
+}
+
+impl Command for ChangeVisibility {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let elem = model
+            .get_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        elem.base_mut().visibility = self.new_visibility;
+        Ok(())
+    }
+
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let elem = model
+            .get_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        elem.base_mut().visibility = self.old_visibility;
+        Ok(())
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+/// Command to toggle abstract/static flags on an element.
+///
+/// Both flags are set atomically in a single command so that a pair of
+/// rapid checkbox toggles merges cleanly.
+#[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ChangeElementFlags {
+    element_id: UmlId,
+    is_abstract: bool,
+    is_static: bool,
+    old_abstract: bool,
+    old_static: bool,
+    description: String,
+}
+
+impl ChangeElementFlags {
+    /// Create a command that will change the abstract and static flags.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommandError::ElementNotFound` if the element does not exist.
+    pub fn new(
+        model: &UmlModel,
+        id: UmlId,
+        is_abstract: bool,
+        is_static: bool,
+    ) -> Result<Self, CommandError> {
+        let elem = model.get(id).ok_or(CommandError::ElementNotFound(id))?;
+        let old_abstract = elem.base().is_abstract;
+        let old_static = elem.base().is_static;
+        let desc = format!(
+            "Set flags of '{}': abstract={}, static={}",
+            elem.name(),
+            is_abstract,
+            is_static,
+        );
+        Ok(Self {
+            element_id: id,
+            is_abstract,
+            is_static,
+            old_abstract,
+            old_static,
+            description: desc,
+        })
+    }
+}
+
+impl Command for ChangeElementFlags {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let elem = model
+            .get_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        let base = elem.base_mut();
+        base.is_abstract = self.is_abstract;
+        base.is_static = self.is_static;
+        Ok(())
+    }
+
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let elem = model
+            .get_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        let base = elem.base_mut();
+        base.is_abstract = self.old_abstract;
+        base.is_static = self.old_static;
+        Ok(())
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+/// Command to change an element's documentation text.
+#[derive(Debug)]
+pub struct ChangeDocumentation {
+    element_id: UmlId,
+    old_documentation: String,
+    new_documentation: String,
+    description: String,
+}
+
+impl ChangeDocumentation {
+    /// Create a command that will change the documentation of the element.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommandError::ElementNotFound` if the element does not exist.
+    pub fn new(
+        model: &UmlModel,
+        id: UmlId,
+        documentation: String,
+    ) -> Result<Self, CommandError> {
+        let elem = model.get(id).ok_or(CommandError::ElementNotFound(id))?;
+        let old_documentation = elem.base().documentation.clone();
+        let desc = format!(
+            "Change documentation of '{}'",
+            elem.name(),
+        );
+        Ok(Self {
+            element_id: id,
+            old_documentation,
+            new_documentation: documentation,
+            description: desc,
+        })
+    }
+}
+
+impl Command for ChangeDocumentation {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let elem = model
+            .get_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        elem.base_mut().documentation.clone_from(&self.new_documentation);
+        Ok(())
+    }
+
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let elem = model
+            .get_mut(self.element_id)
+            .ok_or(CommandError::ElementNotFound(self.element_id))?;
+        elem.base_mut().documentation.clone_from(&self.old_documentation);
         Ok(())
     }
 
@@ -539,5 +727,125 @@ mod tests {
 
         cmd.undo(&mut model).unwrap();
         assert_eq!(model.parents_of(cls_id), Some(&[pkg1_id][..]));
+    }
+
+    // ── CMD-01 through CMD-09: Property editing commands ───────────
+
+    #[test]
+    fn change_visibility_execute() {
+        let mut model = UmlModel::new();
+        let cls = ModelElement::Class(Class::new("Test"));
+        let id = cls.id();
+        model.insert(cls);
+
+        let mut cmd = ChangeVisibility::new(&model, id, Visibility::Private).unwrap();
+        assert_eq!(model.get(id).unwrap().base().visibility, Visibility::Public);
+        cmd.execute(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().base().visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn change_visibility_undo() {
+        let mut model = UmlModel::new();
+        let cls = ModelElement::Class(Class::new("Test"));
+        let id = cls.id();
+        model.insert(cls);
+
+        let mut cmd = ChangeVisibility::new(&model, id, Visibility::Private).unwrap();
+        cmd.execute(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().base().visibility, Visibility::Private);
+
+        cmd.undo(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().base().visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn change_visibility_new_element_not_found() {
+        let model = UmlModel::new();
+        let id = crate::UmlId::new();
+        let result = ChangeVisibility::new(&model, id, Visibility::Private);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CommandError::ElementNotFound(_))));
+    }
+
+    #[test]
+    fn change_flags_execute() {
+        let mut model = UmlModel::new();
+        let cls = ModelElement::Class(Class::new("Test"));
+        let id = cls.id();
+        model.insert(cls);
+
+        let mut cmd = ChangeElementFlags::new(&model, id, true, true).unwrap();
+        let base = model.get(id).unwrap().base();
+        assert!(!base.is_abstract);
+        assert!(!base.is_static);
+
+        cmd.execute(&mut model).unwrap();
+        let base = model.get(id).unwrap().base();
+        assert!(base.is_abstract);
+        assert!(base.is_static);
+    }
+
+    #[test]
+    fn change_flags_undo() {
+        let mut model = UmlModel::new();
+        let cls = ModelElement::Class(Class::new("Test"));
+        let id = cls.id();
+        model.insert(cls);
+
+        let mut cmd = ChangeElementFlags::new(&model, id, true, true).unwrap();
+        cmd.execute(&mut model).unwrap();
+
+        cmd.undo(&mut model).unwrap();
+        let base = model.get(id).unwrap().base();
+        assert!(!base.is_abstract);
+        assert!(!base.is_static);
+    }
+
+    #[test]
+    fn change_flags_new_element_not_found() {
+        let model = UmlModel::new();
+        let id = crate::UmlId::new();
+        let result = ChangeElementFlags::new(&model, id, true, true);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CommandError::ElementNotFound(_))));
+    }
+
+    #[test]
+    fn change_documentation_execute() {
+        let mut model = UmlModel::new();
+        let cls = ModelElement::Class(Class::new("Test"));
+        let id = cls.id();
+        model.insert(cls);
+
+        let mut cmd = ChangeDocumentation::new(&model, id, "A test class".into()).unwrap();
+        assert_eq!(model.get(id).unwrap().base().documentation, "");
+
+        cmd.execute(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().base().documentation, "A test class");
+    }
+
+    #[test]
+    fn change_documentation_undo() {
+        let mut model = UmlModel::new();
+        let cls = ModelElement::Class(Class::new("Test"));
+        let id = cls.id();
+        model.insert(cls);
+
+        let mut cmd = ChangeDocumentation::new(&model, id, "A test class".into()).unwrap();
+        cmd.execute(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().base().documentation, "A test class");
+
+        cmd.undo(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().base().documentation, "");
+    }
+
+    #[test]
+    fn change_documentation_new_element_not_found() {
+        let model = UmlModel::new();
+        let id = crate::UmlId::new();
+        let result = ChangeDocumentation::new(&model, id, "test".into());
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CommandError::ElementNotFound(_))));
     }
 }
