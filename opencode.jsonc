@@ -1,0 +1,34 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "architect",
+  "agent": {
+    "architect": {
+      "mode": "primary",
+      "model": "deepseek/deepseek-v4-pro",
+      "description": "Umbrello Rust Architect",
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
+    },
+    "implementer": {
+      "mode": "subagent",
+      "model": "deepseek/deepseek-v4-flash",
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
+    },
+    "reviewer": {
+      "mode": "subagent",
+      "model": "deepseek/deepseek-v4-pro",
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
+    }
+  }
+}
