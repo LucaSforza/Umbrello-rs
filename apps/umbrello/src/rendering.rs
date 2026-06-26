@@ -1,8 +1,8 @@
 //! Free rendering helper functions for Umbrello-RS.
 //!
-//! These functions handle element colors, visibility symbols, type display,
-//! and arrowhead drawing. They are shared between canvas.rs, tree.rs, and
-//! property_editor.rs.
+//! These functions handle element colors, visibility symbols and names,
+//! type display, and arrowhead drawing. They are shared between canvas.rs,
+//! tree.rs, and property_editor.rs.
 
 use uml_core::{ModelElement, TypeReference, UmlModel, Visibility};
 
@@ -25,6 +25,16 @@ pub(crate) fn visibility_symbol(v: Visibility) -> &'static str {
         Visibility::Protected => "#",
         Visibility::Private => "-",
         Visibility::Implementation => "~",
+    }
+}
+
+/// Returns the human-readable name for a visibility level.
+pub(crate) fn visibility_name(v: Visibility) -> &'static str {
+    match v {
+        Visibility::Public => "Public",
+        Visibility::Protected => "Protected",
+        Visibility::Private => "Private",
+        Visibility::Implementation => "Impl",
     }
 }
 

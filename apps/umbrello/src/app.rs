@@ -141,6 +141,12 @@ impl eframe::App for UmbrelloApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             self.render_canvas(ui);
         });
+        egui::SidePanel::right("property_panel")
+            .resizable(true)
+            .default_width(280.0)
+            .show(ctx, |ui| {
+                self.render_property_editor(ui);
+            });
         if self.drag_node_id.is_some() {
             ctx.request_repaint();
         }

@@ -7,8 +7,8 @@ mod app;
 mod canvas;
 mod file_io;
 mod menu;
+mod property_editor;
 mod rendering;
-#[cfg(test)]
 mod tests;
 mod tool_palette;
 mod tree;
