@@ -4,6 +4,14 @@
 //! and dispatches Commands to the History manager for undo/redo.
 
 mod app;
+mod canvas;
+mod file_io;
+mod menu;
+mod rendering;
+#[cfg(test)]
+mod tests;
+mod tool_palette;
+mod tree;
 
 use app::UmbrelloApp;
 use clap::Parser;
