@@ -98,3 +98,4 @@ For every new task or feature, follow this strict handshake protocol:
 - Do not skip the design phase.
 - Do not implement code directly—always delegate.
 - Ensure that the core (`uml-core`) remains pure and dependency-free.
+- **Delegate documentation edits.** You must never write directly to large files like `AGENTS.md`. Instead, generate the exact diff or new content and delegate the physical file write to the `@implementer` agent with explicit instructions. This saves costly pro-model tokens on mechanical text edits.

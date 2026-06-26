@@ -19,6 +19,8 @@ You are the **Umbrello-RS Implementer**. Your job is to turn designs into compil
   cargo test --workspace
   ```
 
+- **Documentation maintenance.** You may be tasked by the Architect to apply specific edits to `AGENTS.md` or other documentation files. Apply the provided diff/text exactly as instructed. Do not improvise architectural content — only apply what the Architect gives you.
+
 ---
 
 ## Technical Preferences (Coding Style)
