@@ -1503,3 +1503,94 @@ fn component_node_artifact_rendering_handles_all_artifact_modes_and_tiny_bounds(
         });
     });
 }
+
+#[test]
+fn qa_component_node_artifact_targets_create_atomic_nodes_and_support_generic_history() {
+    let cases = [
+        ("tool.component", "Component_1"),
+        ("tool.node", "Node_1"),
+        ("tool.artifact", "Artifact_1"),
+    ];
+    for &(tool_id, expected_name) in &cases {
+        let mut app = make_app_with_diagram();
+        let context = egui::Context::default();
+        let snapshot = app.qa_snapshot();
+        assert!(snapshot
+            .targets
+            .iter()
+            .any(|target| target.id == tool_id && target.enabled));
+        assert_eq!(
+            snapshot
+                .targets
+                .iter()
+                .filter(|target| target.kind == "tool")
+                .count(),
+            17
+        );
+
+        app.qa_select(tool_id.into()).unwrap();
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+            .unwrap();
+        app.qa_select("canvas".into()).unwrap();
+        app.qa_dispatch(
+            crate::app::qa::protocol::QaRequest::Click {
+                position: Some((40.0, 50.0)),
+            },
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(app.current_tool, ToolMode::Select);
+        let (id, element) = app
+            .model
+            .iter()
+            .find(|(_, element)| element.name() == expected_name)
+            .unwrap();
+        match tool_id {
+            "tool.component" => assert!(matches!(element, ModelElement::Component(_))),
+            "tool.node" => assert!(matches!(element, ModelElement::Node(_))),
+            "tool.artifact" => assert!(matches!(element, ModelElement::Artifact(_))),
+            _ => unreachable!(),
+        }
+        let node_target = format!("node:{id}");
+        assert!(app
+            .qa_snapshot()
+            .targets
+            .iter()
+            .any(|target| target.id == node_target && target.enabled));
+        assert!(app.model.diagrams()[0].get_node(id).is_some());
+
+        // The placement is one history entry and restores both model and view.
+        app.qa_select("history.undo".into()).unwrap();
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+            .unwrap();
+        assert!(app.model.get(id).is_none());
+        assert!(app.model.diagrams()[0].get_node(id).is_none());
+        app.qa_select("history.redo".into()).unwrap();
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+            .unwrap();
+        assert!(app.model.get(id).is_some());
+        assert!(app.model.diagrams()[0].get_node(id).is_some());
+
+        app.qa_select(node_target).unwrap();
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+            .unwrap();
+        app.qa_select("property.name".into()).unwrap();
+        app.qa_dispatch(
+            crate::app::qa::protocol::QaRequest::SetText {
+                value: "Renamed".into(),
+            },
+            &context,
+        )
+        .unwrap();
+        assert_eq!(app.model.get(id).unwrap().name(), "Renamed");
+        app.qa_select("history.undo".into()).unwrap();
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+            .unwrap();
+        assert_eq!(app.model.get(id).unwrap().name(), expected_name);
+        app.qa_select("history.redo".into()).unwrap();
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+            .unwrap();
+        assert_eq!(app.model.get(id).unwrap().name(), "Renamed");
+    }
+}
