@@ -276,6 +276,9 @@ impl<W: Write> XmiWriter<W> {
             ModelElement::Datatype(dt) => self.write_class(elem, &dt.base, &dt.classifier, model),
             ModelElement::Actor(actor) => self.write_simple_element("UML:Actor", &actor.base),
             ModelElement::UseCase(uc) => self.write_simple_element("UML:UseCase", &uc.base),
+            ModelElement::Component(component) => self.write_component(component),
+            ModelElement::Node(node) => self.write_simple_element("UML:Node", &node.base),
+            ModelElement::Artifact(artifact) => self.write_artifact(artifact),
             ModelElement::Relationship(_) => {
                 // Relationships are written separately in write_model_wrapper
                 Ok(())
@@ -305,6 +308,66 @@ impl<W: Write> XmiWriter<W> {
             tag.push_attribute(("stereotype", st_xmi.as_str()));
         }
 
+        self.writer.write_event(Event::Empty(tag))?;
+        Ok(())
+    }
+
+    /// Write a `<UML:Component>` element with its executable flag.
+    fn write_component(&mut self, component: &uml_core::Component) -> Result<(), XmiWriteError> {
+        let xmi_id = self.lookup_xmi_id(component.base.id);
+        let mut tag = BytesStart::new("UML:Component");
+        tag.push_attribute(("xmi.id", xmi_id.as_str()));
+        tag.push_attribute(("name", component.base.name.as_str()));
+        tag.push_attribute(("visibility", component.base.visibility.as_str()));
+        tag.push_attribute(("isSpecification", "false"));
+        tag.push_attribute((
+            "isAbstract",
+            if component.base.is_abstract {
+                "true"
+            } else {
+                "false"
+            },
+        ));
+        tag.push_attribute(("isLeaf", "false"));
+        tag.push_attribute(("isRoot", "false"));
+        if let Some(st_id) = component.base.stereotype_id {
+            let st_xmi = self.lookup_xmi_id(st_id);
+            tag.push_attribute(("stereotype", st_xmi.as_str()));
+        }
+        tag.push_attribute(("executable", if component.executable { "1" } else { "0" }));
+        self.writer.write_event(Event::Empty(tag))?;
+        Ok(())
+    }
+
+    /// Write a `<UML:Artifact>` element with its draw mode.
+    fn write_artifact(&mut self, artifact: &uml_core::Artifact) -> Result<(), XmiWriteError> {
+        let xmi_id = self.lookup_xmi_id(artifact.base.id);
+        let mut tag = BytesStart::new("UML:Artifact");
+        tag.push_attribute(("xmi.id", xmi_id.as_str()));
+        tag.push_attribute(("name", artifact.base.name.as_str()));
+        tag.push_attribute(("visibility", artifact.base.visibility.as_str()));
+        tag.push_attribute(("isSpecification", "false"));
+        tag.push_attribute((
+            "isAbstract",
+            if artifact.base.is_abstract {
+                "true"
+            } else {
+                "false"
+            },
+        ));
+        tag.push_attribute(("isLeaf", "false"));
+        tag.push_attribute(("isRoot", "false"));
+        if let Some(st_id) = artifact.base.stereotype_id {
+            let st_xmi = self.lookup_xmi_id(st_id);
+            tag.push_attribute(("stereotype", st_xmi.as_str()));
+        }
+        let draw_as = match artifact.draw_as {
+            uml_core::ArtifactDrawMode::Default => "0",
+            uml_core::ArtifactDrawMode::File => "1",
+            uml_core::ArtifactDrawMode::Library => "2",
+            uml_core::ArtifactDrawMode::Table => "3",
+        };
+        tag.push_attribute(("drawas", draw_as));
         self.writer.write_event(Event::Empty(tag))?;
         Ok(())
     }
@@ -882,6 +945,9 @@ impl<W: Write> XmiWriter<W> {
                 ModelElement::Datatype(_) => "datatypewidget",
                 ModelElement::Actor(_) => "actorwidget",
                 ModelElement::UseCase(_) => "usecasewidget",
+                ModelElement::Component(_) => "componentwidget",
+                ModelElement::Node(_) => "nodewidget",
+                ModelElement::Artifact(_) => "artifactwidget",
                 ModelElement::Relationship(_) => "classwidget", // fallback
             };
         }
@@ -942,8 +1008,9 @@ mod tests {
     use super::*;
     use crate::xmi::reader::XmiReader;
     use uml_core::{
-        Actor, Attribute, Class, Datatype, Enum, Interface, ModelElement, Operation, Package,
-        Parameter, ParameterDirection, TypeReference, UseCase, Visibility,
+        Actor, Artifact, ArtifactDrawMode, Attribute, Class, Component, Datatype, Enum, Interface,
+        ModelElement, Node, Operation, Package, Parameter, ParameterDirection, TypeReference,
+        UseCase, Visibility,
     };
 
     /// Helper: create a simple model with one class.
@@ -1210,6 +1277,74 @@ mod tests {
         assert_eq!(*node_id, restored_class_id);
         assert_eq!(node.model_element_id, restored_class_id);
         assert_eq!(node.bounds, uml_core::Rect::new(123.0, 456.0, 177.0, 89.0));
+    }
+
+    #[test]
+    fn write_component_node_artifact_tags_widgets_and_round_trip() {
+        let mut model = UmlModel::new();
+        let mut component = Component::new("Component");
+        component.executable = true;
+        component.base.original_xmi_id = Some("component-xmi".into());
+        let component_id = component.base.id;
+        let node = Node::new("Node");
+        let node_id = node.base.id;
+        let mut artifact = Artifact::new("Artifact");
+        artifact.draw_as = ArtifactDrawMode::Library;
+        artifact.base.original_xmi_id = Some("artifact-xmi".into());
+        let artifact_id = artifact.base.id;
+        model.insert(ModelElement::Component(component));
+        model.insert(ModelElement::Node(node));
+        model.insert(ModelElement::Artifact(artifact));
+
+        let mut diagram = uml_core::Diagram::new("Deployment", uml_core::DiagramKind::Deployment);
+        diagram.set_zoom_percent(237.0);
+        diagram.add_node(
+            component_id,
+            uml_core::ViewNode::new(component_id, uml_core::Rect::new(11.0, 22.0, 101.0, 51.0)),
+        );
+        diagram.add_node(
+            node_id,
+            uml_core::ViewNode::new(node_id, uml_core::Rect::new(33.0, 44.0, 102.0, 52.0)),
+        );
+        diagram.add_node(
+            artifact_id,
+            uml_core::ViewNode::new(artifact_id, uml_core::Rect::new(55.0, 66.0, 103.0, 53.0)),
+        );
+        model.add_diagram(diagram);
+
+        let xml = write_to_string(&model);
+        assert!(xml.contains("<UML:Component") && xml.contains("executable=\"1\""));
+        assert!(xml.contains("<UML:Node"));
+        assert!(xml.contains("<UML:Artifact") && xml.contains("drawas=\"2\""));
+        assert!(xml.contains("componentwidget"));
+        assert!(xml.contains("nodewidget"));
+        assert!(xml.contains("artifactwidget"));
+        assert!(xml.contains("zoom=\"237\""));
+
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+        assert!(restored.iter().any(|(_, e)| matches!(e, ModelElement::Component(c) if c.executable && c.base.original_xmi_id.as_deref() == Some("component-xmi"))));
+        assert!(restored
+            .iter()
+            .any(|(_, e)| matches!(e, ModelElement::Node(_))));
+        assert!(restored.iter().any(|(_, e)| matches!(e, ModelElement::Artifact(a) if a.draw_as == ArtifactDrawMode::Library && a.base.original_xmi_id.as_deref() == Some("artifact-xmi"))));
+        assert_eq!(restored.diagrams()[0].zoom_percent(), 237.0);
+        assert_eq!(restored.diagrams()[0].node_count(), 3);
+
+        for (mode, value) in [
+            (ArtifactDrawMode::Default, "0"),
+            (ArtifactDrawMode::File, "1"),
+            (ArtifactDrawMode::Library, "2"),
+            (ArtifactDrawMode::Table, "3"),
+        ] {
+            let mut mode_model = UmlModel::new();
+            let mut mode_artifact = Artifact::new("Mode");
+            mode_artifact.draw_as = mode;
+            mode_model.insert(ModelElement::Artifact(mode_artifact));
+            assert!(write_to_string(&mode_model).contains(&format!("drawas=\"{value}\"")));
+        }
     }
 
     #[test]

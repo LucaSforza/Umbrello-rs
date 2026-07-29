@@ -16,10 +16,10 @@ use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
 
 use uml_core::{
-    Actor, AssociationType, Attribute, Class, ClassifierData, Datatype, Diagram, DiagramKind,
-    EdgeId, ElementBase, Enum, Interface, LineRouting, ModelElement, Operation, Package, Parameter,
-    ParameterDirection, Point, Rect, Relationship, TypeReference, UmlId, UmlModel, UseCase,
-    ViewEdge, ViewNode, Visibility,
+    Actor, Artifact, ArtifactDrawMode, AssociationType, Attribute, Class, ClassifierData,
+    Component, Datatype, Diagram, DiagramKind, EdgeId, ElementBase, Enum, Interface, LineRouting,
+    ModelElement, Operation, Package, Parameter, ParameterDirection, Point, Rect, Relationship,
+    TypeReference, UmlId, UmlModel, UseCase, ViewEdge, ViewNode, Visibility,
 };
 
 use super::error::XmiParseError;
@@ -361,6 +361,24 @@ impl XmiReader {
                                 count += 1;
                             }
                         },
+                        "Component" => {
+                            if let Some(elem) = self.parse_component(e)? {
+                                model.insert(elem);
+                                count += 1;
+                            }
+                        },
+                        "Node" => {
+                            if let Some(elem) = self.parse_node(e)? {
+                                model.insert(elem);
+                                count += 1;
+                            }
+                        },
+                        "Artifact" => {
+                            if let Some(elem) = self.parse_artifact(e)? {
+                                model.insert(elem);
+                                count += 1;
+                            }
+                        },
                         "Stereotype" => {
                             self.register_stereotype(e)?;
                         },
@@ -489,6 +507,24 @@ impl XmiReader {
                         },
                         "UseCase" => {
                             if let Some(elem) = self.parse_usecase(e)? {
+                                model.insert(elem);
+                                count += 1;
+                            }
+                        },
+                        "Component" => {
+                            if let Some(elem) = self.parse_component(e)? {
+                                model.insert(elem);
+                                count += 1;
+                            }
+                        },
+                        "Node" => {
+                            if let Some(elem) = self.parse_node(e)? {
+                                model.insert(elem);
+                                count += 1;
+                            }
+                        },
+                        "Artifact" => {
+                            if let Some(elem) = self.parse_artifact(e)? {
                                 model.insert(elem);
                                 count += 1;
                             }
@@ -995,6 +1031,43 @@ impl XmiReader {
         self.parse_simple_element(e, "UseCase", |base| ModelElement::UseCase(UseCase { base }))
     }
 
+    /// Parse a `<UML:Component>` element, including its executable flag.
+    fn parse_component(
+        &mut self,
+        e: &quick_xml::events::BytesStart,
+    ) -> Result<Option<ModelElement>, XmiParseError> {
+        let executable = Self::attr_value(e, "executable")
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        self.parse_simple_element(e, "Component", |base| {
+            ModelElement::Component(Component { base, executable })
+        })
+    }
+
+    /// Parse a `<UML:Node>` element.
+    fn parse_node(
+        &mut self,
+        e: &quick_xml::events::BytesStart,
+    ) -> Result<Option<ModelElement>, XmiParseError> {
+        self.parse_simple_element(e, "Node", |base| ModelElement::Node(uml_core::Node { base }))
+    }
+
+    /// Parse a `<UML:Artifact>` element, defaulting invalid draw modes safely.
+    fn parse_artifact(
+        &mut self,
+        e: &quick_xml::events::BytesStart,
+    ) -> Result<Option<ModelElement>, XmiParseError> {
+        let draw_as = match Self::attr_value(e, "drawas").and_then(|value| value.parse().ok()) {
+            Some(0) => ArtifactDrawMode::Default,
+            Some(1) => ArtifactDrawMode::File,
+            Some(2) => ArtifactDrawMode::Library,
+            Some(3) => ArtifactDrawMode::Table,
+            _ => ArtifactDrawMode::Default,
+        };
+        self.parse_simple_element(e, "Artifact", |base| {
+            ModelElement::Artifact(Artifact { base, draw_as })
+        })
+    }
+
     /// Register a stereotype from the XMI.
     fn register_stereotype(
         &mut self,
@@ -1388,9 +1461,10 @@ impl XmiReader {
                 },
                 // Widget elements — add nodes to current diagram
                 "classwidget" | "interfacewidget" | "notewidget" | "packagewidget"
-                | "usecasewidget" | "actorwidget" | "componentwidget" | "deploymentwidget"
-                | "datatypewidget" | "enumwidget" | "signalwidget" | "exceptionwidget"
-                | "entitywidget" | "objectwidget" | "categorywidget" => {
+                | "usecasewidget" | "actorwidget" | "componentwidget" | "nodewidget"
+                | "artifactwidget" | "deploymentwidget" | "datatypewidget" | "enumwidget"
+                | "signalwidget" | "exceptionwidget" | "entitywidget" | "objectwidget"
+                | "categorywidget" => {
                     self.parse_xmi_widget(e)?;
                     return Ok(());
                 },
@@ -2736,5 +2810,72 @@ mod tests {
         assert!(usecases.len() >= 9, "expected at least 9 use cases, got {}", usecases.len());
 
         eprintln!("test-DUC.xmi: {} actors, {} use cases parsed", actors.len(), usecases.len());
+    }
+
+    #[test]
+    fn parse_component_node_artifact_start_empty_and_widgets() {
+        let xml = r#"<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3"><XMI.content><UML:Model xmi.id="M" name="Model"><UML:Namespace.ownedElement><UML:Component xmi.id="C" name="Comp" executable="1"/><UML:Node xmi.id="N" name="Server"></UML:Node><UML:Artifact xmi.id="A" name="Db" drawas="3"></UML:Artifact><UML:Component xmi.id="Cbad" name="Default" executable="bad"/><UML:Artifact xmi.id="Abad" name="Bad" drawas="99"/></UML:Namespace.ownedElement></UML:Model></XMI.content><XMI.extensions><diagrams><diagram name="Deployment" type="7" zoom="237"><widgets><componentwidget xmi.id="C" x="11" y="22" width="101" height="51"/><nodewidget xmi.id="N" x="33" y="44" width="102" height="52"/><artifactwidget xmi.id="A" x="55" y="66" width="103" height="53"/></widgets></diagram></diagrams></XMI.extensions></XMI>"#;
+
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        assert!(matches!(
+            model.iter().find(|(_, e)| e.name() == "Comp").unwrap().1,
+            ModelElement::Component(component) if component.executable
+        ));
+        assert!(matches!(
+            model.iter().find(|(_, e)| e.name() == "Server").unwrap().1,
+            ModelElement::Node(_)
+        ));
+        assert!(matches!(
+            model.iter().find(|(_, e)| e.name() == "Db").unwrap().1,
+            ModelElement::Artifact(artifact) if artifact.draw_as == ArtifactDrawMode::Table
+        ));
+        assert!(matches!(
+            model.iter().find(|(_, e)| e.name() == "Default").unwrap().1,
+            ModelElement::Component(component) if !component.executable
+        ));
+        assert!(matches!(
+            model.iter().find(|(_, e)| e.name() == "Bad").unwrap().1,
+            ModelElement::Artifact(artifact) if artifact.draw_as == ArtifactDrawMode::Default
+        ));
+        assert_eq!(model.diagrams().len(), 1);
+        assert_eq!(model.diagrams()[0].zoom_percent(), 237.0);
+        assert_eq!(model.diagrams()[0].node_count(), 3);
+        assert_eq!(
+            model.diagrams()[0]
+                .get_node(model.iter().find(|(_, e)| e.name() == "Db").unwrap().0)
+                .unwrap()
+                .bounds
+                .width(),
+            103.0
+        );
+    }
+
+    #[test]
+    fn parse_all_artifact_draw_modes() {
+        for (value, expected) in [
+            ("0", ArtifactDrawMode::Default),
+            ("1", ArtifactDrawMode::File),
+            ("2", ArtifactDrawMode::Library),
+            ("3", ArtifactDrawMode::Table),
+        ] {
+            let xml = format!(
+                r#"<XMI><XMI.content><UML:Model xmi.id="M"><UML:Artifact xmi.id="A" name="Artifact" drawas="{value}"/></UML:Model></XMI.content></XMI>"#
+            );
+            let mut model = UmlModel::new();
+            let mut reader = XmiReader::new();
+            reader.read_from(xml.as_bytes(), &mut model).unwrap();
+            let artifact = model
+                .iter()
+                .find_map(|(_, element)| match element {
+                    ModelElement::Artifact(artifact) => Some(artifact),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(artifact.draw_as, expected);
+        }
     }
 }
