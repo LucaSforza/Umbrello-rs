@@ -855,6 +855,11 @@ impl XmiReader {
         }
     }
 
+    /// Parse the boolean spellings used by Umbrello's UML 1.2 attributes.
+    fn parse_bool(value: &str) -> bool {
+        value == "1" || value.eq_ignore_ascii_case("true")
+    }
+
     /// Register an element's XMI ID and return the generated `UmlId`.
     fn register_id(&mut self, xmi_id: &str) -> Result<UmlId, XmiParseError> {
         if self.id_map.contains_key(xmi_id) {
@@ -887,7 +892,15 @@ impl XmiReader {
         let xmi_id = Self::require_attr(e, "xmi.id", element_name)?;
         let name = Self::attr_value(e, "name").unwrap_or_default();
         let vis_str = Self::attr_value(e, "visibility").unwrap_or_else(|| "public".to_string());
-        let is_abstract = Self::attr_value(e, "isAbstract").is_some_and(|v| v == "true");
+        let is_abstract = Self::attr_value(e, "isAbstract").is_some_and(|v| Self::parse_bool(&v));
+        let documentation = Self::attr_value(e, "documentation")
+            .or_else(|| Self::attr_value(e, "comment"))
+            .unwrap_or_default();
+        let is_static = Self::attr_value(e, "isStatic")
+            .or_else(|| Self::attr_value(e, "static"))
+            .is_some_and(|value| Self::parse_bool(&value))
+            || Self::attr_value(e, "scope").is_some_and(|value| value == "classifier_level")
+            || Self::attr_value(e, "ownerScope").is_some_and(|value| value == "classifier");
 
         let uml_id = self.register_id(&xmi_id)?;
         self.register_name(&name, uml_id);
@@ -897,9 +910,9 @@ impl XmiReader {
             name,
             visibility: Self::parse_visibility(&vis_str),
             stereotype_id: None, // resolved in Pass 2
-            documentation: String::new(),
+            documentation,
             is_abstract,
-            is_static: false,
+            is_static,
             original_xmi_id: Some(xmi_id),
         })
     }
@@ -2877,5 +2890,31 @@ mod tests {
                 .unwrap();
             assert_eq!(artifact.draw_as, expected);
         }
+    }
+
+    #[test]
+    fn parse_common_metadata_legacy_attributes_and_defaults() {
+        let xml = r#"<XMI><XMI.content><UML:Model xmi.id="M"><UML:Component xmi.id="C" name="Legacy" comment="from comment" static="true"/><UML:Node xmi.id="N" name="Scope" scope="classifier_level"/><UML:Artifact xmi.id="A" name="Owner" ownerScope="classifier"/><UML:Component xmi.id="D" name="Defaults"/></UML:Model></XMI.content></XMI>"#;
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut model).unwrap();
+
+        let common = |name: &str| {
+            model
+                .iter()
+                .find(|(_, element)| element.name() == name)
+                .unwrap()
+                .1
+        };
+        assert!(
+            matches!(common("Legacy"), ModelElement::Component(component) if component.base.documentation == "from comment" && component.base.is_static)
+        );
+        assert!(matches!(common("Scope"), ModelElement::Node(node) if node.base.is_static));
+        assert!(
+            matches!(common("Owner"), ModelElement::Artifact(artifact) if artifact.base.is_static)
+        );
+        assert!(
+            matches!(common("Defaults"), ModelElement::Component(component) if component.base.documentation.is_empty() && !component.base.is_static)
+        );
     }
 }

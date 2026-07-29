@@ -294,13 +294,7 @@ impl<W: Write> XmiWriter<W> {
     ) -> Result<(), XmiWriteError> {
         let xmi_id = self.lookup_xmi_id(base.id);
         let mut tag = BytesStart::new(tag_name);
-        tag.push_attribute(("xmi.id", xmi_id.as_str()));
-        tag.push_attribute(("name", base.name.as_str()));
-        tag.push_attribute(("visibility", base.visibility.as_str()));
-        tag.push_attribute(("isSpecification", "false"));
-        tag.push_attribute(("isAbstract", if base.is_abstract { "true" } else { "false" }));
-        tag.push_attribute(("isLeaf", "false"));
-        tag.push_attribute(("isRoot", "false"));
+        Self::add_common_simple_attributes(&mut tag, base, &xmi_id);
 
         // Write stereotype reference if set
         if let Some(st_id) = base.stereotype_id {
@@ -316,20 +310,7 @@ impl<W: Write> XmiWriter<W> {
     fn write_component(&mut self, component: &uml_core::Component) -> Result<(), XmiWriteError> {
         let xmi_id = self.lookup_xmi_id(component.base.id);
         let mut tag = BytesStart::new("UML:Component");
-        tag.push_attribute(("xmi.id", xmi_id.as_str()));
-        tag.push_attribute(("name", component.base.name.as_str()));
-        tag.push_attribute(("visibility", component.base.visibility.as_str()));
-        tag.push_attribute(("isSpecification", "false"));
-        tag.push_attribute((
-            "isAbstract",
-            if component.base.is_abstract {
-                "true"
-            } else {
-                "false"
-            },
-        ));
-        tag.push_attribute(("isLeaf", "false"));
-        tag.push_attribute(("isRoot", "false"));
+        Self::add_common_simple_attributes(&mut tag, &component.base, &xmi_id);
         if let Some(st_id) = component.base.stereotype_id {
             let st_xmi = self.lookup_xmi_id(st_id);
             tag.push_attribute(("stereotype", st_xmi.as_str()));
@@ -343,20 +324,7 @@ impl<W: Write> XmiWriter<W> {
     fn write_artifact(&mut self, artifact: &uml_core::Artifact) -> Result<(), XmiWriteError> {
         let xmi_id = self.lookup_xmi_id(artifact.base.id);
         let mut tag = BytesStart::new("UML:Artifact");
-        tag.push_attribute(("xmi.id", xmi_id.as_str()));
-        tag.push_attribute(("name", artifact.base.name.as_str()));
-        tag.push_attribute(("visibility", artifact.base.visibility.as_str()));
-        tag.push_attribute(("isSpecification", "false"));
-        tag.push_attribute((
-            "isAbstract",
-            if artifact.base.is_abstract {
-                "true"
-            } else {
-                "false"
-            },
-        ));
-        tag.push_attribute(("isLeaf", "false"));
-        tag.push_attribute(("isRoot", "false"));
+        Self::add_common_simple_attributes(&mut tag, &artifact.base, &xmi_id);
         if let Some(st_id) = artifact.base.stereotype_id {
             let st_xmi = self.lookup_xmi_id(st_id);
             tag.push_attribute(("stereotype", st_xmi.as_str()));
@@ -370,6 +338,23 @@ impl<W: Write> XmiWriter<W> {
         tag.push_attribute(("drawas", draw_as));
         self.writer.write_event(Event::Empty(tag))?;
         Ok(())
+    }
+
+    /// Add the C++-compatible common attributes shared by simple UML elements.
+    fn add_common_simple_attributes(tag: &mut BytesStart<'_>, base: &ElementBase, xmi_id: &str) {
+        tag.push_attribute(("xmi.id", xmi_id));
+        tag.push_attribute(("name", base.name.as_str()));
+        tag.push_attribute(("visibility", base.visibility.as_str()));
+        tag.push_attribute(("isSpecification", "false"));
+        tag.push_attribute(("isAbstract", if base.is_abstract { "true" } else { "false" }));
+        tag.push_attribute(("isLeaf", "false"));
+        tag.push_attribute(("isRoot", "false"));
+        if !base.documentation.is_empty() {
+            tag.push_attribute(("comment", base.documentation.as_str()));
+        }
+        if base.is_static {
+            tag.push_attribute(("ownerScope", "classifier"));
+        }
     }
 
     // ─── Package ───────────────────────────────────────────────────────
@@ -1284,12 +1269,18 @@ mod tests {
         let mut model = UmlModel::new();
         let mut component = Component::new("Component");
         component.executable = true;
+        component.base.documentation = "component documentation".into();
+        component.base.is_static = true;
         component.base.original_xmi_id = Some("component-xmi".into());
         let component_id = component.base.id;
-        let node = Node::new("Node");
+        let mut node = Node::new("Node");
+        node.base.documentation = "node documentation".into();
+        node.base.is_static = true;
         let node_id = node.base.id;
         let mut artifact = Artifact::new("Artifact");
         artifact.draw_as = ArtifactDrawMode::Library;
+        artifact.base.documentation = "artifact documentation".into();
+        artifact.base.is_static = true;
         artifact.base.original_xmi_id = Some("artifact-xmi".into());
         let artifact_id = artifact.base.id;
         model.insert(ModelElement::Component(component));
@@ -1316,6 +1307,10 @@ mod tests {
         assert!(xml.contains("<UML:Component") && xml.contains("executable=\"1\""));
         assert!(xml.contains("<UML:Node"));
         assert!(xml.contains("<UML:Artifact") && xml.contains("drawas=\"2\""));
+        assert!(xml.contains("comment=\"component documentation\""));
+        assert!(xml.contains("comment=\"node documentation\""));
+        assert!(xml.contains("comment=\"artifact documentation\""));
+        assert_eq!(xml.matches("ownerScope=\"classifier\"").count(), 3);
         assert!(xml.contains("componentwidget"));
         assert!(xml.contains("nodewidget"));
         assert!(xml.contains("artifactwidget"));
@@ -1325,11 +1320,11 @@ mod tests {
         let mut reader = XmiReader::new();
         reader.read_from(xml.as_bytes(), &mut restored).unwrap();
         reader.resolve(&mut restored).unwrap();
-        assert!(restored.iter().any(|(_, e)| matches!(e, ModelElement::Component(c) if c.executable && c.base.original_xmi_id.as_deref() == Some("component-xmi"))));
+        assert!(restored.iter().any(|(_, e)| matches!(e, ModelElement::Component(c) if c.executable && c.base.is_static && c.base.documentation == "component documentation" && c.base.original_xmi_id.as_deref() == Some("component-xmi"))));
         assert!(restored
             .iter()
-            .any(|(_, e)| matches!(e, ModelElement::Node(_))));
-        assert!(restored.iter().any(|(_, e)| matches!(e, ModelElement::Artifact(a) if a.draw_as == ArtifactDrawMode::Library && a.base.original_xmi_id.as_deref() == Some("artifact-xmi"))));
+            .any(|(_, e)| matches!(e, ModelElement::Node(n) if n.base.is_static && n.base.documentation == "node documentation")));
+        assert!(restored.iter().any(|(_, e)| matches!(e, ModelElement::Artifact(a) if a.draw_as == ArtifactDrawMode::Library && a.base.is_static && a.base.documentation == "artifact documentation" && a.base.original_xmi_id.as_deref() == Some("artifact-xmi"))));
         assert_eq!(restored.diagrams()[0].zoom_percent(), 237.0);
         assert_eq!(restored.diagrams()[0].node_count(), 3);
 
