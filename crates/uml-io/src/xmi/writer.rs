@@ -866,7 +866,9 @@ impl<W: Write> XmiWriter<W> {
         // Add padding
         let height = (max_y + 100.0).max(600.0) as i32;
         let width = (max_x + 100.0).max(800.0) as i32;
-        (height, width, 100) // zoom = 100%
+        // Umbrello stores diagram zoom as an integer percentage. Normalize
+        // before rounding so even directly deserialized legacy data is safe.
+        (height, width, diagram.zoom_percent().round() as i32)
     }
 
     /// Guess the widget type name based on the model element type.
@@ -1171,6 +1173,43 @@ mod tests {
         assert!(xml.contains("XMI"), "should contain XMI root");
         assert!(xml.contains("xmi.version=\"1.2\""), "should have XMI version");
         assert!(xml.contains("UML:Model"), "should contain UML:Model");
+    }
+
+    #[test]
+    fn write_diagram_zoom_and_round_trip_non_default_value() {
+        let mut model = model_with_one_class();
+        let class_id = model
+            .iter()
+            .find(|(_, element)| matches!(element, ModelElement::Class(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        let mut diagram = uml_core::Diagram::new("Main", uml_core::DiagramKind::Class);
+        diagram.set_zoom_percent(237.5);
+        diagram.add_node(
+            class_id,
+            uml_core::ViewNode::new(class_id, uml_core::Rect::new(123.0, 456.0, 177.0, 89.0)),
+        );
+        model.add_diagram(diagram);
+
+        let xml = write_to_string(&model);
+        assert!(xml.contains("zoom=\"238\""));
+
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+        let restored_class_id = restored
+            .iter()
+            .find(|(_, element)| matches!(element, ModelElement::Class(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        let restored_diagram = &restored.diagrams()[0];
+        assert_eq!(restored_diagram.zoom_percent(), 238.0);
+        assert_eq!(restored_diagram.node_count(), 1);
+        let (node_id, node) = restored_diagram.nodes.iter().next().unwrap();
+        assert_eq!(*node_id, restored_class_id);
+        assert_eq!(node.model_element_id, restored_class_id);
+        assert_eq!(node.bounds, uml_core::Rect::new(123.0, 456.0, 177.0, 89.0));
     }
 
     #[test]

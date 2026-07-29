@@ -19,6 +19,10 @@ pub use edge::{EdgeId, EdgeLabel, EdgeLabelKind, LineRouting, ViewEdge};
 pub use geometry::{Point, Rect, Size};
 pub use node::ViewNode;
 
+const DEFAULT_ZOOM_PERCENT: f64 = 100.0;
+const MIN_ZOOM_PERCENT: f64 = 10.0;
+const MAX_ZOOM_PERCENT: f64 = 500.0;
+
 /// Unique identifier for a diagram.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DiagramId(Uuid);
@@ -137,6 +141,9 @@ pub struct Diagram {
     pub name: String,
     /// The type of diagram.
     pub kind: DiagramKind,
+    /// Persisted viewport zoom percentage, bounded to 10–500% by the setter.
+    #[serde(default = "default_zoom_percent")]
+    pub zoom_percent: f64,
     /// Visual nodes keyed by the model element's UmlId.
     pub nodes: IndexMap<UmlId, ViewNode>,
     /// Visual edges keyed by EdgeId.
@@ -151,9 +158,22 @@ impl Diagram {
             id: DiagramId::new(),
             name: name.into(),
             kind,
+            zoom_percent: DEFAULT_ZOOM_PERCENT,
             nodes: IndexMap::new(),
             edges: IndexMap::new(),
         }
+    }
+
+    /// Return the safe, bounded zoom percentage for this diagram.
+    #[must_use]
+    pub fn zoom_percent(&self) -> f64 {
+        normalize_zoom_percent(self.zoom_percent)
+    }
+
+    /// Set the zoom percentage, using 100% for non-finite values and clamping
+    /// finite values to the inclusive range 10–500%.
+    pub fn set_zoom_percent(&mut self, zoom_percent: f64) {
+        self.zoom_percent = normalize_zoom_percent(zoom_percent);
     }
 
     /// Add a node to the diagram.
@@ -200,6 +220,18 @@ impl Diagram {
     }
 }
 
+fn default_zoom_percent() -> f64 {
+    DEFAULT_ZOOM_PERCENT
+}
+
+fn normalize_zoom_percent(zoom_percent: f64) -> f64 {
+    if zoom_percent.is_finite() {
+        zoom_percent.clamp(MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT)
+    } else {
+        DEFAULT_ZOOM_PERCENT
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -212,8 +244,29 @@ mod tests {
         let d = Diagram::new("Main", DiagramKind::Class);
         assert_eq!(d.name, "Main");
         assert_eq!(d.kind, DiagramKind::Class);
+        assert_eq!(d.zoom_percent(), 100.0);
         assert_eq!(d.node_count(), 0);
         assert_eq!(d.edge_count(), 0);
+    }
+
+    #[test]
+    fn zoom_is_bounded_and_non_finite_values_are_safe() {
+        let mut diagram = Diagram::new("Zoom", DiagramKind::Class);
+        diagram.set_zoom_percent(5.0);
+        assert_eq!(diagram.zoom_percent(), 10.0);
+        diagram.set_zoom_percent(600.0);
+        assert_eq!(diagram.zoom_percent(), 500.0);
+        diagram.set_zoom_percent(f64::NAN);
+        assert_eq!(diagram.zoom_percent(), 100.0);
+        diagram.set_zoom_percent(f64::INFINITY);
+        assert_eq!(diagram.zoom_percent(), 100.0);
+    }
+
+    #[test]
+    fn zoom_defaults_when_missing_from_serde_data() {
+        let json = r#"{"id":"00000000-0000-0000-0000-000000000001","name":"Old","kind":"Class","nodes":{},"edges":{}}"#;
+        let diagram: Diagram = serde_json::from_str(json).unwrap();
+        assert_eq!(diagram.zoom_percent(), 100.0);
     }
 
     #[test]

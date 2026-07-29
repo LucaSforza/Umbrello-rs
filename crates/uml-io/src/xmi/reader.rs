@@ -269,7 +269,6 @@ impl XmiReader {
 
         // Track sections to skip extension/diagram content.
         let mut inside_content = false;
-        let mut inside_extensions = false;
 
         // Flag for deferred skip of an element (after buf borrow ends).
         let mut skip_element_depth = 0usize;
@@ -287,7 +286,10 @@ impl XmiReader {
                         continue;
                     }
                     if tag.ends_with("XMI.extensions") || tag == "XMI.extensions" {
-                        inside_extensions = true;
+                        // The writer emits Umbrello diagrams in this root-level
+                        // container, while older files may use XMI.extension
+                        // inside the model. Parse both forms.
+                        self.inside_xmi_extension = true;
                         inside_content = false;
                         continue;
                     }
@@ -297,7 +299,7 @@ impl XmiReader {
                     }
 
                     // Skip everything outside content section
-                    if !inside_content || inside_extensions {
+                    if !inside_content && !self.inside_xmi_extension {
                         continue;
                     }
 
@@ -424,7 +426,6 @@ impl XmiReader {
                         continue;
                     }
                     if tag.ends_with("XMI.extensions") || tag == "XMI.extensions" {
-                        inside_extensions = true;
                         inside_content = false;
                         continue;
                     }
@@ -434,7 +435,7 @@ impl XmiReader {
                     }
 
                     // Skip everything outside content section
-                    if !inside_content || inside_extensions {
+                    if !inside_content && !self.inside_xmi_extension {
                         continue;
                     }
 
@@ -534,8 +535,13 @@ impl XmiReader {
                             }
                         },
                         "XMI.extensions" => {
-                            inside_extensions = false;
                             inside_content = false;
+                            self.inside_xmi_extension = false;
+                            self.inside_diagrams = false;
+                            self.inside_associations = false;
+                            self.inside_linepath = false;
+                            self.current_diagram = None;
+                            self.pending_assocwidget = None;
                         },
                         // Classifier end — clear context
                         "Class" | "Interface" | "Enumeration" | "Enum" | "DataType" => {
@@ -1430,7 +1436,12 @@ impl XmiReader {
             .unwrap_or(0);
         let kind = DiagramKind::from_type_num(type_num);
 
-        self.current_diagram = Some(Diagram::new(name, kind));
+        let zoom_percent = Self::attr_value(e, "zoom")
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(100.0);
+        let mut diagram = Diagram::new(name, kind);
+        diagram.set_zoom_percent(zoom_percent);
+        self.current_diagram = Some(diagram);
         Ok(())
     }
 
@@ -2453,6 +2464,33 @@ mod tests {
         let diagrams = model.diagrams();
         assert_eq!(diagrams.len(), 1);
         assert_eq!(diagrams[0].kind, DiagramKind::Class);
+    }
+
+    #[test]
+    fn parse_diagram_zoom_defaults_clamps_and_rejects_malformed_values() {
+        for (zoom, expected) in [
+            ("5", 10.0),
+            ("600", 500.0),
+            ("not-a-number", 100.0),
+            ("NaN", 100.0),
+            ("inf", 100.0),
+            ("", 100.0),
+        ] {
+            let xml = format!(
+                r#"<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3"><XMI.content><UML:Model xmi.id="m1" name="Model"><UML:Namespace.ownedElement><XMI.extension xmi.extender="umbrello"><diagrams><diagram name="Zoom" type="1" zoom="{zoom}"><widgets/><messages/><associations/></diagram></diagrams></XMI.extension></UML:Namespace.ownedElement></UML:Model></XMI.content></XMI>"#
+            );
+            let mut model = UmlModel::new();
+            let mut reader = XmiReader::new();
+            reader.read_from(xml.as_bytes(), &mut model).unwrap();
+            reader.resolve(&mut model).unwrap();
+            assert_eq!(model.diagrams()[0].zoom_percent(), expected, "zoom={zoom}");
+        }
+
+        let xml = r#"<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3"><XMI.content><UML:Model xmi.id="m1" name="Model"><UML:Namespace.ownedElement><XMI.extension xmi.extender="umbrello"><diagrams><diagram name="Zoom" type="1"><widgets/><messages/><associations/></diagram></diagrams></XMI.extension></UML:Namespace.ownedElement></UML:Model></XMI.content></XMI>"#;
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut model).unwrap();
+        assert_eq!(model.diagrams()[0].zoom_percent(), 100.0);
     }
 
     #[test]
