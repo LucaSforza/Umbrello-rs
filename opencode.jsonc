@@ -4,7 +4,7 @@
   "agent": {
     "architect": {
       "mode": "primary",
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "openai/gpt-5.6-sol",
       "description": "Umbrello Rust Architect",
       "tools": {
         "write": true,
@@ -14,7 +14,8 @@
     },
     "implementer": {
       "mode": "subagent",
-      "model": "deepseek/deepseek-v4-flash",
+      "model": "openai/gpt-5.6-luna",
+      "description": "Umbrello Rust Implementer",
       "tools": {
         "write": true,
         "edit": true,
@@ -23,7 +24,8 @@
     },
     "reviewer": {
       "mode": "subagent",
-      "model": "deepseek/deepseek-v4-flash",
+      "model": "openai/gpt-5.6-terra",
+      "description": "Umbrello Rust Independent Reviewer",
       "tools": {
         "write": true,
         "edit": true,
