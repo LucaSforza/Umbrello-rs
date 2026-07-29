@@ -28,6 +28,17 @@ impl UmbrelloApp {
             .active_diagram
             .and_then(|i| self.model.diagrams().get(i))
             .map(|d| d.id.to_string());
+        let active_data = self
+            .active_diagram
+            .and_then(|i| self.model.diagrams().get(i));
+        let (zoom_percent, pan_x, pan_y) = active_data.map_or((None, None, None), |diagram| {
+            let pan = self
+                .viewport_pans
+                .get(&diagram.id)
+                .copied()
+                .unwrap_or_default();
+            (Some(diagram.zoom_percent()), Some(f64::from(pan.x)), Some(f64::from(pan.y)))
+        });
         let mut targets = Vec::new();
         let mut add = |id: String,
                        kind: &str,
@@ -119,6 +130,22 @@ impl UmbrelloApp {
             None,
             active_diagram.clone(),
         );
+        for (id, label) in [
+            ("viewport.zoom_in", "Zoom In"),
+            ("viewport.zoom_out", "Zoom Out"),
+            ("viewport.fit", "Fit Diagram"),
+            ("viewport.reset", "Reset View"),
+        ] {
+            add(
+                id.into(),
+                "action",
+                label.into(),
+                active_diagram.is_some(),
+                false,
+                None,
+                active_diagram.clone(),
+            );
+        }
         if let Some(diagram) = self
             .active_diagram
             .and_then(|i| self.model.diagrams().get(i))
@@ -200,6 +227,9 @@ impl UmbrelloApp {
             active_diagram,
             selected_element: self.selected_element_id.map(|id| id.to_string()),
             selected_qa_target: self.selected_qa_target.clone(),
+            zoom_percent,
+            pan_x,
+            pan_y,
             status: self.status_message.clone(),
             targets,
         }
@@ -324,6 +354,27 @@ impl UmbrelloApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return Ok(());
         }
+        if id == "viewport.zoom_in" {
+            self.adjust_zoom(5.0);
+            self.bump_state();
+            return Ok(());
+        }
+        if id == "viewport.zoom_out" {
+            self.adjust_zoom(-5.0);
+            self.bump_state();
+            return Ok(());
+        }
+        if id == "viewport.reset" {
+            self.reset_viewport();
+            self.bump_state();
+            return Ok(());
+        }
+        if id == "viewport.fit" {
+            let rect = self.last_canvas_rect.ok_or(QaError::NotReady)?;
+            self.fit_active_diagram(rect);
+            self.bump_state();
+            return Ok(());
+        }
         if let Some(name) = id.strip_prefix("tool.") {
             let (_, tool) = TOOLS
                 .iter()
@@ -357,6 +408,9 @@ impl UmbrelloApp {
                     .map_err(QaError::Command)?;
                 self.choose_tool(ToolMode::Select);
                 return Ok(());
+            }
+            if self.current_tool == ToolMode::Select {
+                return Err(QaError::WrongTargetKind(id.into()));
             }
             return Err(QaError::WrongTargetKind(id.into()));
         }
@@ -434,6 +488,38 @@ impl UmbrelloApp {
         to_target: Option<String>,
     ) -> Result<(), QaError> {
         self.require_selected(id)?;
+        if id == "canvas" {
+            if self.current_tool != ToolMode::Select {
+                return Err(QaError::WrongTargetKind(id.into()));
+            }
+            let (x, y) = position.ok_or(QaError::InvalidCoordinates)?;
+            if !x.is_finite() || !y.is_finite() {
+                return Err(QaError::InvalidCoordinates);
+            }
+            let (pan_x, pan_y) = (x as f32, y as f32);
+            if !pan_x.is_finite() || !pan_y.is_finite() {
+                return Err(QaError::InvalidCoordinates);
+            }
+            let diagram_id = self
+                .active_diagram
+                .and_then(|i| self.model.diagrams().get(i))
+                .ok_or(QaError::NotReady)?
+                .id;
+            let current_pan = self
+                .viewport_pans
+                .get(&diagram_id)
+                .copied()
+                .unwrap_or_default();
+            let next_x = current_pan.x + pan_x;
+            let next_y = current_pan.y + pan_y;
+            if !next_x.is_finite() || !next_y.is_finite() {
+                return Err(QaError::InvalidCoordinates);
+            }
+            self.viewport_pans
+                .insert(diagram_id, egui::vec2(next_x, next_y));
+            self.bump_state();
+            return Ok(());
+        }
         let source = id
             .strip_prefix("node:")
             .ok_or_else(|| QaError::WrongTargetKind(id.into()))?

@@ -73,6 +73,44 @@ impl UmbrelloApp {
                         ui.close_menu();
                     }
                 });
+                ui.menu_button("View", |ui| {
+                    let enabled = self.active_diagram.is_some();
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Zoom In (+5%)"))
+                        .clicked()
+                    {
+                        self.adjust_zoom(5.0);
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Zoom Out (-5%)"))
+                        .clicked()
+                    {
+                        self.adjust_zoom(-5.0);
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Fit Diagram"))
+                        .clicked()
+                    {
+                        if let Some(rect) = self.last_canvas_rect {
+                            self.fit_active_diagram(rect);
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(enabled, egui::Button::new("100%")).clicked() {
+                        self.reset_viewport();
+                        ui.close_menu();
+                    }
+                    let label = self
+                        .active_diagram
+                        .and_then(|i| self.model.diagrams().get(i))
+                        .map_or_else(
+                            || "Zoom: —".to_string(),
+                            |d| format!("Zoom: {:.0}%", d.zoom_percent()),
+                        );
+                    ui.label(label);
+                });
                 if ui
                     .add_enabled(self.history.can_undo(), egui::Button::new("↩ Undo"))
                     .clicked()
@@ -103,6 +141,7 @@ impl UmbrelloApp {
         self.model = UmlModel::new();
         self.history.clear();
         self.active_diagram = None;
+        self.clear_viewport_pans();
         self.current_file_path = None;
         self.is_dirty = false;
         self.status_message = "New model created".into();
@@ -126,6 +165,7 @@ impl UmbrelloApp {
                 self.model = model;
                 self.history.clear();
                 self.active_diagram = None;
+                self.clear_viewport_pans();
                 self.current_file_path = Some(path.clone());
                 self.is_dirty = false;
                 self.loaded_from_xmi = true;

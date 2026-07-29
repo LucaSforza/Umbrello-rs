@@ -24,6 +24,12 @@ pub(crate) struct UiSnapshot {
     pub active_diagram: Option<String>,
     pub selected_element: Option<String>,
     pub selected_qa_target: Option<String>,
+    /// Persisted zoom of the active diagram, when one is active.
+    pub zoom_percent: Option<f64>,
+    /// Transient active-diagram pan in logical screen pixels.
+    pub pan_x: Option<f64>,
+    /// Transient active-diagram pan in logical screen pixels.
+    pub pan_y: Option<f64>,
     pub status: String,
     pub targets: Vec<UiTarget>,
 }
@@ -42,6 +48,8 @@ pub(crate) enum QaRequest {
         value: String,
     },
     Drag {
+        /// For a node, the destination model position. For the canvas, this is
+        /// a screen-space pan delta `(dx, dy)`, not an absolute pointer point.
         position: Option<(f64, f64)>,
         to_target: Option<String>,
     },

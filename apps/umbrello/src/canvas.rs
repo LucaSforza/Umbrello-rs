@@ -43,6 +43,30 @@ impl UmbrelloApp {
 
         let diagram = self.model.diagrams()[diag_idx].clone();
         let diagram_id = diagram.id;
+        let canvas_rect = ui.max_rect();
+        self.last_canvas_rect = Some(canvas_rect);
+        let Some(transform) = self.viewport_transform(canvas_rect.min) else {
+            return;
+        };
+        if ui.rect_contains_pointer(canvas_rect) {
+            let scroll = ui.input(|i| i.raw_scroll_delta.y);
+            if scroll.abs() > f32::EPSILON {
+                self.zoom_at(
+                    canvas_rect,
+                    ui.ctx()
+                        .pointer_latest_pos()
+                        .unwrap_or(canvas_rect.center()),
+                    if scroll > 0.0 { 1.15 } else { 1.0 / 1.15 },
+                );
+            }
+            if ui.input(|i| i.pointer.button_down(egui::PointerButton::Middle)) {
+                let delta = ui.input(|i| i.pointer.delta());
+                if delta != egui::Vec2::ZERO {
+                    let pan = self.viewport_pans.entry(diagram_id).or_default();
+                    *pan += delta;
+                }
+            }
+        }
 
         // Background
         ui.painter()
@@ -56,10 +80,10 @@ impl UmbrelloApp {
             if self.current_tool.is_edge_tool() {
                 if let Some(source_node) = diagram.get_node(source_id) {
                     if let Some(pointer_pos) = ui.ctx().pointer_latest_pos() {
-                        let src_center = egui::pos2(
-                            (source_node.bounds.x() + source_node.bounds.width() / 2.0) as f32,
-                            (source_node.bounds.y() + source_node.bounds.height() / 2.0) as f32,
-                        );
+                        let src_center = transform.model_to_screen(Point::new(
+                            source_node.bounds.x() + source_node.bounds.width() / 2.0,
+                            source_node.bounds.y() + source_node.bounds.height() / 2.0,
+                        ));
                         let cursor = pointer_pos;
                         let dir = cursor - src_center;
                         let len = dir.length();
@@ -156,10 +180,7 @@ impl UmbrelloApp {
                 continue;
             }
 
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(node.bounds.x() as f32, node.bounds.y() as f32),
-                egui::Vec2::new(node.bounds.width() as f32, node.bounds.height() as f32),
-            );
+            let rect = transform.model_rect_to_screen(node.bounds);
 
             // Draw the partitioned node
             self.draw_partitioned_node(ui, node, rect);
@@ -179,8 +200,10 @@ impl UmbrelloApp {
                         self.drag_start_pos = Some(egui::pos2(orig_x as f32, orig_y as f32));
                     }
                     let delta = response.drag_delta();
-                    let new_pos =
-                        Point::new(orig_x + f64::from(delta.x), orig_y + f64::from(delta.y));
+                    let new_pos = Point::new(
+                        orig_x + f64::from(delta.x) / transform.scale,
+                        orig_y + f64::from(delta.y) / transform.scale,
+                    );
                     let _ = self.move_node_to(diagram_id, model_element_id, new_pos);
                 }
                 if response.clicked() {
@@ -255,8 +278,7 @@ impl UmbrelloApp {
                 // Hover preview
                 if bg_response.hovered() {
                     if let Some(pointer_pos) = ui.ctx().pointer_latest_pos() {
-                        self.preview_position =
-                            Some(Point::new(f64::from(pointer_pos.x), f64::from(pointer_pos.y)));
+                        self.preview_position = Some(transform.screen_to_model(pointer_pos));
                     }
                 } else {
                     self.preview_position = None;
@@ -265,7 +287,7 @@ impl UmbrelloApp {
                 // Click to create
                 if bg_response.clicked() {
                     if let Some(click_pos) = bg_response.interact_pointer_pos() {
-                        let pos = Point::new(f64::from(click_pos.x), f64::from(click_pos.y));
+                        let pos = transform.screen_to_model(click_pos);
                         if let Err(e) = self.place_element(self.current_tool, pos) {
                             self.status_message = format!("Error: {e}");
                         }
@@ -296,10 +318,12 @@ impl UmbrelloApp {
 
         // ── Ghost preview rectangle ─────────────────────────────────
         if let Some(preview_pos) = self.preview_position {
-            let preview_rect = egui::Rect::from_min_size(
-                egui::pos2(preview_pos.x as f32 - 80.0, preview_pos.y as f32 - 30.0),
-                egui::Vec2::new(160.0, 60.0),
-            );
+            let preview_rect = transform.model_rect_to_screen(uml_core::Rect::new(
+                preview_pos.x - 80.0,
+                preview_pos.y - 30.0,
+                160.0,
+                60.0,
+            ));
             ui.painter().rect_filled(
                 preview_rect,
                 4.0,
@@ -643,6 +667,9 @@ impl UmbrelloApp {
 
     fn draw_edges(&self, diagram: &Diagram, ui: &egui::Ui) {
         let painter = ui.painter();
+        let Some(transform) = self.viewport_transform(ui.max_rect().min) else {
+            return;
+        };
 
         for (_, edge) in &diagram.edges {
             let src_node = diagram.get_node(edge.source_node_id);
@@ -651,14 +678,14 @@ impl UmbrelloApp {
                 continue;
             };
 
-            let src_center = egui::pos2(
-                (src.bounds.x() + src.bounds.width() / 2.0) as f32,
-                (src.bounds.y() + src.bounds.height() / 2.0) as f32,
-            );
-            let tgt_center = egui::pos2(
-                (tgt.bounds.x() + tgt.bounds.width() / 2.0) as f32,
-                (tgt.bounds.y() + tgt.bounds.height() / 2.0) as f32,
-            );
+            let src_center = transform.model_to_screen(Point::new(
+                src.bounds.x() + src.bounds.width() / 2.0,
+                src.bounds.y() + src.bounds.height() / 2.0,
+            ));
+            let tgt_center = transform.model_to_screen(Point::new(
+                tgt.bounds.x() + tgt.bounds.width() / 2.0,
+                tgt.bounds.y() + tgt.bounds.height() / 2.0,
+            ));
 
             // Determine relationship type
             let rel_kind = self

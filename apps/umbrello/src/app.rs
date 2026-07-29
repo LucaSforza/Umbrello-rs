@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 
 #[path = "qa/mod.rs"]
 pub(crate) mod qa;
+#[path = "viewport.rs"]
+pub(crate) mod viewport;
 use uml_core::{Command, UmlId, UmlModel};
 
 type QaReply = SyncSender<Result<self::qa::protocol::QaResponse, self::qa::protocol::QaError>>;
@@ -57,6 +59,8 @@ pub(crate) struct UmbrelloApp {
     pub(crate) name_counters: HashMap<String, u64>,
     /// Ghost-rectangle position for creation preview (in canvas coordinates).
     pub(crate) preview_position: Option<uml_core::Point>,
+    pub(crate) viewport_pans: HashMap<uml_core::DiagramId, egui::Vec2>,
+    pub(crate) last_canvas_rect: Option<egui::Rect>,
 
     /// The currently selected element on the canvas, if any.
     /// Set by clicking a node; cleared by clicking background or pressing Escape.
@@ -105,6 +109,8 @@ impl UmbrelloApp {
             current_tool: crate::tool_palette::ToolMode::Select,
             name_counters: HashMap::new(),
             preview_position: None,
+            viewport_pans: HashMap::new(),
+            last_canvas_rect: None,
             selected_element_id: None,
             name_edit_buffer: String::new(),
             drag_source_node_id: None,
@@ -118,6 +124,26 @@ impl UmbrelloApp {
             pending_syncs: Vec::new(),
             next_screenshot_id: 1,
         }
+    }
+
+    pub(crate) fn viewport_transform(
+        &self,
+        origin: egui::Pos2,
+    ) -> Option<crate::app::viewport::ViewportTransform> {
+        let index = self.active_diagram?;
+        let diagram = self.model.diagrams().get(index)?;
+        Some(crate::app::viewport::ViewportTransform::new(
+            origin,
+            self.viewport_pans
+                .get(&diagram.id)
+                .copied()
+                .unwrap_or_default(),
+            diagram.zoom_percent(),
+        ))
+    }
+
+    pub(crate) fn clear_viewport_pans(&mut self) {
+        self.viewport_pans.clear();
     }
 
     /// Set the current file path (used after CLI loading).

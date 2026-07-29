@@ -14,7 +14,7 @@ use image::GenericImageView;
 use std::path::PathBuf;
 use uml_core::{
     commands, Actor, AssociationType, Class, Command, Datatype, Diagram, DiagramKind, Enum,
-    Interface, ModelElement, Package, Point, Size, TypeReference, UmlId, UmlModel, UseCase,
+    Interface, ModelElement, Package, Point, Rect, Size, TypeReference, UmlId, UmlModel, UseCase,
     Visibility,
 };
 
@@ -579,6 +579,177 @@ fn selection_persists_before_click() {
     // in normal flow because is_creation_tool() is checked first.
     let was_select = app.current_tool == ToolMode::Select;
     assert!(was_select);
+}
+
+#[test]
+fn viewport_zoom_anchor_and_pan_are_view_only() {
+    let mut app = make_app_with_diagram();
+    let canvas = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(800.0, 600.0));
+    let cursor = egui::pos2(310.0, 220.0);
+    let before_dirty = app.is_dirty;
+    let before_history = app.history.can_undo();
+    let point = app
+        .viewport_transform(canvas.min)
+        .unwrap()
+        .screen_to_model(cursor);
+    app.zoom_at(canvas, cursor, 2.0);
+    let after = app
+        .viewport_transform(canvas.min)
+        .unwrap()
+        .model_to_screen(point);
+    assert!((after.x - cursor.x).abs() < 1e-4);
+    assert!((after.y - cursor.y).abs() < 1e-4);
+    assert_eq!(app.model.diagrams()[0].zoom_percent(), 200.0);
+    assert_eq!(app.is_dirty, before_dirty);
+    assert_eq!(app.history.can_undo(), before_history);
+}
+
+#[test]
+fn viewport_fit_handles_negative_coordinates_and_empty_diagrams() {
+    let mut app = make_app_with_diagram();
+    let element = Class::new("Fit");
+    let id = element.base.id;
+    app.model.insert(ModelElement::Class(element));
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(id, uml_core::ViewNode::new(id, Rect::new(-500.0, -300.0, 1000.0, 600.0)));
+    let canvas = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+    app.fit_active_diagram(canvas);
+    let transform = app.viewport_transform(canvas.min).unwrap();
+    let center = transform.model_to_screen(Point::new(0.0, 0.0));
+    assert!((center.x - canvas.center().x).abs() < 1.0);
+    assert!((center.y - canvas.center().y).abs() < 1.0);
+    app.model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .remove_node(id);
+    app.fit_active_diagram(canvas);
+    assert_eq!(app.model.diagrams()[0].zoom_percent(), 100.0);
+    assert_eq!(app.viewport_pans[&diagram_id], egui::Vec2::ZERO);
+}
+
+#[test]
+fn qa_exposes_and_dispatches_viewport_actions_without_model_mutation() {
+    let mut app = make_app_with_diagram();
+    let ctx = egui::Context::default();
+    let initial_dirty = app.is_dirty;
+    let initial_history = app.history.can_undo();
+    let snapshot = app.qa_snapshot();
+    for target in [
+        "viewport.zoom_in",
+        "viewport.zoom_out",
+        "viewport.fit",
+        "viewport.reset",
+    ] {
+        assert!(snapshot
+            .targets
+            .iter()
+            .any(|item| item.id == target && item.enabled));
+    }
+    assert_eq!(snapshot.zoom_percent, Some(100.0));
+    assert_eq!(snapshot.pan_x, Some(0.0));
+    assert_eq!(snapshot.pan_y, Some(0.0));
+
+    app.qa_select("viewport.zoom_in".into()).unwrap();
+    let selected_revision = app.state_revision;
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+    assert_eq!(app.state_revision, selected_revision + 1);
+    assert_eq!(app.model.diagrams()[0].zoom_percent(), 105.0);
+    assert_eq!(app.is_dirty, initial_dirty);
+    assert_eq!(app.history.can_undo(), initial_history);
+}
+
+#[test]
+fn qa_canvas_drag_pans_by_screen_delta_and_rejects_non_finite_values() {
+    let mut app = make_app_with_diagram();
+    let ctx = egui::Context::default();
+    app.current_tool = ToolMode::Select;
+    app.qa_select("canvas".into()).unwrap();
+    let before = app.state_revision;
+    app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::Drag {
+            position: Some((12.0, -7.0)),
+            to_target: None,
+        },
+        &ctx,
+    )
+    .unwrap();
+    let diagram_id = app.model.diagrams()[0].id;
+    assert_eq!(app.state_revision, before + 1);
+    assert_eq!(app.viewport_pans[&diagram_id], egui::vec2(12.0, -7.0));
+    assert!(!app.is_dirty);
+    assert!(!app.history.can_undo());
+
+    let error = app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::Drag {
+            position: Some((f64::NAN, 0.0)),
+            to_target: None,
+        },
+        &ctx,
+    );
+    assert!(matches!(error, Err(crate::app::qa::protocol::QaError::InvalidCoordinates)));
+
+    let pan_before = app.viewport_pans[&diagram_id];
+    let revision_before = app.state_revision;
+    let error = app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::Drag {
+            position: Some((1e308, 0.0)),
+            to_target: None,
+        },
+        &ctx,
+    );
+    assert!(matches!(error, Err(crate::app::qa::protocol::QaError::InvalidCoordinates)));
+    assert_eq!(app.viewport_pans[&diagram_id], pan_before);
+    assert_eq!(app.state_revision, revision_before);
+
+    let max_f32 = f64::from(f32::MAX);
+    app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::Drag {
+            position: Some((max_f32, 0.0)),
+            to_target: None,
+        },
+        &ctx,
+    )
+    .unwrap();
+    let pan_before = app.viewport_pans[&diagram_id];
+    let revision_before = app.state_revision;
+    let error = app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::Drag {
+            position: Some((max_f32, 0.0)),
+            to_target: None,
+        },
+        &ctx,
+    );
+    assert!(matches!(error, Err(crate::app::qa::protocol::QaError::InvalidCoordinates)));
+    assert_eq!(app.viewport_pans[&diagram_id], pan_before);
+    assert_eq!(app.state_revision, revision_before);
+}
+
+#[test]
+fn qa_viewport_targets_are_disabled_without_active_diagram_and_fit_requires_canvas() {
+    let mut app = UmbrelloApp::new(UmlModel::new(), false);
+    let ctx = egui::Context::default();
+    let snapshot = app.qa_snapshot();
+    assert_eq!(snapshot.zoom_percent, None);
+    assert!(snapshot
+        .targets
+        .iter()
+        .any(|target| target.id == "viewport.reset" && !target.enabled));
+    assert!(matches!(
+        app.qa_select("viewport.reset".into()),
+        Err(crate::app::qa::protocol::QaError::UnavailableTarget(_))
+    ));
+
+    app = make_app_with_diagram();
+    app.qa_select("viewport.fit".into()).unwrap();
+    let before = app.state_revision;
+    let result =
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx);
+    assert!(matches!(result, Err(crate::app::qa::protocol::QaError::NotReady)));
+    assert_eq!(app.state_revision, before);
 }
 
 /// T15: New element created via the tool is visible in the model's element list.

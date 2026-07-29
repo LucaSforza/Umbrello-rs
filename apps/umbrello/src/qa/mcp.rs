@@ -37,9 +37,9 @@ pub(crate) struct TextArgs {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct DragArgs {
-    /// Destination logical X coordinate.
+    /// Destination model X for node movement, or screen-space pan delta X for canvas panning.
     pub x: Option<f64>,
-    /// Destination logical Y coordinate.
+    /// Destination model Y for node movement, or screen-space pan delta Y for canvas panning.
     pub y: Option<f64>,
     /// Optional destination node target for edge creation.
     pub to_target: Option<String>,
@@ -112,7 +112,7 @@ impl QaMcpServer {
     /// Inspect the current UI state and stable semantic targets.
     #[tool(
         name = "ui_inspect",
-        description = "Inspect readiness, revisions, selection, and operable UI targets."
+        description = "Inspect readiness, revisions, viewport state, selection, and operable UI targets."
     )]
     pub(crate) async fn ui_inspect(
         &self,
@@ -192,7 +192,7 @@ impl QaMcpServer {
     /// Drag the selected node to coordinates or another node target.
     #[tool(
         name = "ui_drag",
-        description = "Drag the selected source node to a point or destination node target."
+        description = "Drag the selected node to a point or destination node; with canvas selected and Select active, x/y are screen-space pan deltas."
     )]
     pub(crate) async fn ui_drag(
         &self,

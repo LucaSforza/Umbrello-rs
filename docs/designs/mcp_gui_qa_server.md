@@ -26,11 +26,11 @@ The server must be implemented in Rust with the official `rmcp` crate. `eframe::
 
 Expose exactly these generic tools:
 
-1. `ui_inspect` — return readiness, frame/state revisions, active tool/diagram, selected model element, status, and currently operable semantic targets.
+1. `ui_inspect` — return readiness, frame/state revisions, active tool/diagram, viewport zoom/pan, selected model element, status, and currently operable semantic targets.
 2. `ui_select` — select one semantic QA target by its exact stable target ID. This changes the automation cursor only; selecting a canvas node in the application occurs when `ui_click` is invoked.
 3. `ui_click` — activate the selected target. For the canvas target it accepts a required logical `(x, y)` position; other targets use their semantic action.
 4. `ui_set_text` — replace and commit text for the selected editable target, initially element name and documentation.
-5. `ui_drag` — drag the selected node to a logical point, or drag it to another node target while an edge tool is active. This exercises the same move/edge action methods used by canvas interactions.
+5. `ui_drag` — drag the selected node to a logical model point, drag it to another node target while an edge tool is active, or pan the selected canvas by a screen-space delta while Select is active. This exercises the same action methods used by canvas interactions.
 6. `ui_sync` — wait until at least one UI frame has rendered after a requested state revision, with cancellation and timeout.
 7. `ui_screenshot` — capture the current native viewport and return an MCP image content block containing PNG data plus textual dimensions/revision metadata.
 
@@ -49,6 +49,7 @@ Stable target IDs are ASCII protocol identifiers and never emoji labels or scree
 - `diagram.new_class` when visible
 - `diagram:<DiagramId>` for each diagram
 - `canvas` when a diagram is active
+- `viewport.zoom_in`, `viewport.zoom_out`, `viewport.fit`, and `viewport.reset` when a diagram is active
 - `node:<UmlId>` for each visible node in the active diagram
 - `property.name`, `property.documentation`, `property.visibility.<value>`, `property.abstract`, `property.static` when an element is selected
 
@@ -127,7 +128,7 @@ Concurrent requests are correlated by ID. Missing events, cancellation, GUI shut
 QA protocol types are serde/schemars-compatible and remain in the application crate:
 
 - `UiTarget { id, kind, label, enabled, selected, element_id, diagram_id }`
-- `UiSnapshot { ready, ui_frame, state_revision, rendered_revision, active_tool, active_diagram, selected_element, status, targets }`
+- `UiSnapshot { ready, ui_frame, state_revision, rendered_revision, active_tool, active_diagram, zoom_percent, pan_x, pan_y, selected_element, status, targets }`; viewport fields are null without an active diagram.
 - typed parameter structs for select, click, text, drag, sync, and screenshot tools
 - `QaError` variants for not ready, queue full, unavailable/stale target, wrong target kind, invalid coordinates/value, command failure, timeout, cancellation, screenshot failure, and shutdown
 
@@ -139,7 +140,8 @@ No panic/unwrap is permitted in new production paths. Tool execution failures us
 - User-visible and MCP-triggered model mutations continue through existing commands/history.
 - `file.save` is enabled only when a current path already exists. `file.new` is disabled through MCP while dirty because v1 does not automate the native unsaved-changes dialog. This avoids destructive hidden policy.
 - `ui_set_text` commits complete values deterministically; it does not emulate IME keystrokes.
-- `ui_drag` uses logical egui coordinates and the same command constructors as canvas drag/edge creation.
+- `ui_drag` uses logical egui/model coordinates for node movement and edge creation. When `canvas` is selected under Select, `(x, y)` is a requested screen-space pan delta in pixels, applied directly to the transient active-diagram pan; it is not an absolute pointer destination and does not require a prior pointer origin.
+- Viewport actions are UI-only: they increment `state_revision`, request repaint, and never dirty the model or create history entries. `viewport.fit` requires a rendered canvas rectangle and returns `NotReady` before one exists.
 - Normal application startup and behavior remain unchanged unless `--mcp-stdio` is supplied.
 - MCP server metadata identifies the QA/debug purpose and reports tool support only; no resources or prompts are required.
 
