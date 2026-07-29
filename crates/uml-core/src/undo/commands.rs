@@ -414,7 +414,221 @@ impl Command for ChangeDocumentation {
 
 // ─── Diagram visual commands ─────────────────────────────────────
 
-use crate::diagram::{DiagramId, EdgeId, LineRouting, Point, Rect, Size, ViewEdge, ViewNode};
+use crate::diagram::{
+    Diagram, DiagramId, EdgeId, LineRouting, Point, Rect, Size, ViewEdge, ViewNode,
+};
+
+/// Command to create a diagram at a deterministic position in the model.
+///
+/// The complete diagram is retained as a snapshot. Undo and redo therefore
+/// restore not only the diagram metadata, but also its nodes and edges.
+#[derive(Debug)]
+pub struct CreateDiagram {
+    diagram: Diagram,
+    position: usize,
+    applied: bool,
+    description: String,
+}
+
+impl CreateDiagram {
+    /// Create a command that appends `diagram` to `model`.
+    ///
+    /// The append position is captured when the command is constructed, so
+    /// redo restores the same insertion position even when other diagrams
+    /// follow it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a diagram with the same ID already exists.
+    pub fn new(model: &UmlModel, diagram: Diagram) -> Result<Self, CommandError> {
+        Self::new_at(model, diagram, model.diagrams().len())
+    }
+
+    /// Create a command that inserts `diagram` at `position`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the position is outside the current diagram list
+    /// or if a diagram with the same ID already exists.
+    pub fn new_at(
+        model: &UmlModel,
+        diagram: Diagram,
+        position: usize,
+    ) -> Result<Self, CommandError> {
+        if position > model.diagrams().len() {
+            return Err(CommandError::InvalidOperation(
+                "diagram insertion position is out of range".into(),
+            ));
+        }
+        if model.get_diagram(diagram.id).is_some() {
+            return Err(CommandError::InvalidOperation("diagram ID already exists".into()));
+        }
+        Ok(Self {
+            description: format!("Create diagram '{}'", diagram.name),
+            diagram,
+            position,
+            applied: false,
+        })
+    }
+}
+
+impl Command for CreateDiagram {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        if self.applied {
+            return Err(CommandError::InvalidOperation("CreateDiagram already executed".into()));
+        }
+        if self.position > model.diagrams().len() {
+            return Err(CommandError::InvalidOperation(
+                "diagram insertion position is out of range".into(),
+            ));
+        }
+        if model.get_diagram(self.diagram.id).is_some() {
+            return Err(CommandError::InvalidOperation("diagram ID already exists".into()));
+        }
+
+        let mut diagrams = model.diagrams().to_vec();
+        diagrams.insert(self.position, self.diagram.clone());
+        replace_diagrams(model, diagrams);
+        self.applied = true;
+        Ok(())
+    }
+
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        if !self.applied {
+            return Err(CommandError::InvalidOperation(
+                "CreateDiagram has not been executed".into(),
+            ));
+        }
+        let Some(current) = model.diagrams().get(self.position) else {
+            return Err(CommandError::InvalidOperation("created diagram is missing".into()));
+        };
+        if current.id != self.diagram.id {
+            return Err(CommandError::InvalidOperation(
+                "created diagram is not at its deterministic position".into(),
+            ));
+        }
+
+        let mut diagrams = model.diagrams().to_vec();
+        let removed = diagrams.remove(self.position);
+        replace_diagrams(model, diagrams);
+        self.diagram = removed;
+        self.applied = false;
+        Ok(())
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+/// Command to replace the editable semantics of an existing relationship.
+///
+/// Relationship identity and endpoints are immutable through this command.
+/// The replacement's `original_xmi_id` is discarded in favor of the value
+/// captured from the model, preserving XMI identity across edits.
+#[derive(Debug)]
+pub struct UpdateRelationship {
+    relationship_id: UmlId,
+    old: Relationship,
+    new: Relationship,
+    applied: bool,
+    description: String,
+}
+
+impl UpdateRelationship {
+    /// Create a command for replacing one relationship's editable fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `relationship_id` is absent, does not identify a
+    /// relationship, or when the replacement changes its ID or endpoints.
+    pub fn new(
+        model: &UmlModel,
+        relationship_id: UmlId,
+        mut replacement: Relationship,
+    ) -> Result<Self, CommandError> {
+        let current = model
+            .get(relationship_id)
+            .ok_or(CommandError::ElementNotFound(relationship_id))?;
+        let ModelElement::Relationship(old) = current else {
+            return Err(CommandError::InvalidOperation("element is not a relationship".into()));
+        };
+        if replacement.base.id != old.base.id
+            || replacement.source_id != old.source_id
+            || replacement.target_id != old.target_id
+        {
+            return Err(CommandError::InvalidOperation(
+                "relationship ID or endpoints cannot be changed".into(),
+            ));
+        }
+        replacement
+            .base
+            .original_xmi_id
+            .clone_from(&old.base.original_xmi_id);
+        Ok(Self {
+            relationship_id,
+            description: format!("Update relationship '{}'", old.base.name),
+            old: old.clone(),
+            new: replacement,
+            applied: false,
+        })
+    }
+}
+
+impl Command for UpdateRelationship {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        if self.applied {
+            return Err(CommandError::InvalidOperation(
+                "UpdateRelationship already executed".into(),
+            ));
+        }
+        replace_relationship(model, self.relationship_id, &self.old, &self.new)?;
+        self.applied = true;
+        Ok(())
+    }
+
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        if !self.applied {
+            return Err(CommandError::InvalidOperation(
+                "UpdateRelationship has not been executed".into(),
+            ));
+        }
+        replace_relationship(model, self.relationship_id, &self.new, &self.old)?;
+        self.applied = false;
+        Ok(())
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+fn replace_diagrams(model: &mut UmlModel, diagrams: Vec<Diagram>) {
+    let ids: Vec<_> = model.diagrams().iter().map(|diagram| diagram.id).collect();
+    for id in ids {
+        let _ = model.remove_diagram(id);
+    }
+    for diagram in diagrams {
+        model.add_diagram(diagram);
+    }
+}
+
+fn replace_relationship(
+    model: &mut UmlModel,
+    id: UmlId,
+    expected: &Relationship,
+    replacement: &Relationship,
+) -> Result<(), CommandError> {
+    let element = model.get_mut(id).ok_or(CommandError::ElementNotFound(id))?;
+    let ModelElement::Relationship(current) = element else {
+        return Err(CommandError::InvalidOperation("element is not a relationship".into()));
+    };
+    if current != expected {
+        return Err(CommandError::InvalidOperation("relationship was modified externally".into()));
+    }
+    *current = replacement.clone();
+    Ok(())
+}
 
 /// Atomically create a model element and its visual node in a diagram.
 ///
@@ -901,6 +1115,15 @@ mod tests {
     use crate::elements::{Class, Package};
     use crate::types::AssociationType;
 
+    fn same_diagram(left: &Diagram, right: &Diagram) -> bool {
+        left.id == right.id
+            && left.name == right.name
+            && left.kind == right.kind
+            && left.zoom_percent.to_bits() == right.zoom_percent.to_bits()
+            && left.nodes == right.nodes
+            && left.edges == right.edges
+    }
+
     #[test]
     fn create_element_description() {
         let cmd = CreateElement::new(ModelElement::Class(Class::new("Person")));
@@ -1298,5 +1521,178 @@ mod tests {
             .unwrap()
             .edges
             .contains_key(&edge_id));
+    }
+
+    #[test]
+    fn create_diagram_preserves_snapshot_and_insertion_position() {
+        let mut model = UmlModel::new();
+        let first = Diagram::new("First", DiagramKind::Class);
+        let last = Diagram::new("Last", DiagramKind::Deployment);
+        model.add_diagram(first.clone());
+        model.add_diagram(last.clone());
+
+        let mut created = Diagram::new("Created", DiagramKind::Component);
+        created.set_zoom_percent(250.0);
+        let node_id = UmlId::new();
+        created.add_node(node_id, ViewNode::new(node_id, Rect::new(1.0, 2.0, 3.0, 4.0)));
+        let edge_id = EdgeId::new();
+        created.add_edge(edge_id, ViewEdge::new(node_id, node_id, node_id, LineRouting::Direct));
+        let created_id = created.id;
+        let snapshot = created.clone();
+        let mut command = CreateDiagram::new_at(&model, created, 1).unwrap();
+
+        command.execute(&mut model).unwrap();
+        assert_eq!(model.diagrams()[1].id, created_id);
+        assert!(same_diagram(&model.diagrams()[1], &snapshot));
+        command.undo(&mut model).unwrap();
+        assert_eq!(model.diagrams().len(), 2);
+        assert!(same_diagram(&model.diagrams()[0], &first));
+        assert!(same_diagram(&model.diagrams()[1], &last));
+        command.execute(&mut model).unwrap();
+        assert_eq!(model.diagrams()[1].id, created_id);
+        assert!(same_diagram(&model.diagrams()[1], &snapshot));
+    }
+
+    #[test]
+    fn create_diagram_failure_is_atomic_and_repeated_transitions_are_rejected() {
+        let mut model = UmlModel::new();
+        let existing = Diagram::new("Existing", DiagramKind::Class);
+        let existing_id = existing.id;
+        model.add_diagram(existing.clone());
+        let duplicate = CreateDiagram::new(&model, Diagram::new("New", DiagramKind::Class));
+        assert!(duplicate.is_ok());
+
+        let mut command =
+            CreateDiagram::new_at(&model, Diagram::new("New", DiagramKind::Class), 1).unwrap();
+        command.execute(&mut model).unwrap();
+        assert!(command.execute(&mut model).is_err());
+        command.undo(&mut model).unwrap();
+        assert!(command.undo(&mut model).is_err());
+        assert_eq!(model.diagrams().len(), 1);
+        assert!(same_diagram(&model.diagrams()[0], &existing));
+        assert_eq!(model.diagrams()[0].id, existing_id);
+    }
+
+    #[test]
+    fn create_diagram_undo_accepts_non_history_zoom_and_redo_restores_it() {
+        let mut model = UmlModel::new();
+        let diagram = Diagram::new("Zoomed", DiagramKind::Class);
+        let diagram_id = diagram.id;
+        let mut history = crate::undo::History::new(10);
+        history
+            .execute(Box::new(CreateDiagram::new(&model, diagram).unwrap()), &mut model)
+            .unwrap();
+
+        model
+            .get_diagram_mut(diagram_id)
+            .unwrap()
+            .set_zoom_percent(275.0);
+        history.undo(&mut model).unwrap();
+        assert!(model.get_diagram(diagram_id).is_none());
+        history.redo(&mut model).unwrap();
+        let restored = model.get_diagram(diagram_id).unwrap();
+        assert_eq!(restored.id, diagram_id);
+        assert!((restored.zoom_percent() - 275.0).abs() < f64::EPSILON);
+    }
+
+    fn relationship_fixture() -> (UmlModel, UmlId, UmlId, UmlId) {
+        let mut model = UmlModel::new();
+        let source = ModelElement::Class(Class::new("Source"));
+        let source_id = source.id();
+        let target = ModelElement::Class(Class::new("Target"));
+        let target_id = target.id();
+        model.insert(source);
+        model.insert(target);
+        let relationship = Relationship::new_association(source_id, target_id);
+        let relationship_id = relationship.base.id;
+        model.insert(ModelElement::Relationship(relationship));
+        (model, relationship_id, source_id, target_id)
+    }
+
+    #[test]
+    fn update_relationship_covers_editable_fields_and_roundtrip() {
+        let (mut model, relationship_id, source_id, target_id) = relationship_fixture();
+        let original_xmi_id = "xmi-rel".to_string();
+        if let ModelElement::Relationship(relationship) = model.get_mut(relationship_id).unwrap() {
+            relationship.base.original_xmi_id = Some(original_xmi_id.clone());
+        }
+        let mut replacement = Relationship::new(AssociationType::Composition, source_id, target_id);
+        replacement.base.id = relationship_id;
+        replacement.base.name = "owns".into();
+        replacement.base.documentation = "owned relationship".into();
+        replacement.source_role_name = Some("whole".into());
+        replacement.target_role_name = Some("part".into());
+        replacement.source_multiplicity = Some("1".into());
+        replacement.target_multiplicity = Some("0..*".into());
+        replacement.source_to_target_navigable = true;
+        replacement.target_to_source_navigable = true;
+
+        let mut command = UpdateRelationship::new(&model, relationship_id, replacement).unwrap();
+        command.execute(&mut model).unwrap();
+        let ModelElement::Relationship(updated) = model.get(relationship_id).unwrap() else {
+            panic!("expected relationship");
+        };
+        assert_eq!(updated.kind, AssociationType::Composition);
+        assert_eq!(updated.base.name, "owns");
+        assert_eq!(updated.base.documentation, "owned relationship");
+        assert_eq!(updated.source_role_name.as_deref(), Some("whole"));
+        assert_eq!(updated.target_role_name.as_deref(), Some("part"));
+        assert_eq!(updated.source_multiplicity.as_deref(), Some("1"));
+        assert_eq!(updated.target_multiplicity.as_deref(), Some("0..*"));
+        assert!(updated.source_to_target_navigable && updated.target_to_source_navigable);
+        assert_eq!(updated.base.original_xmi_id.as_deref(), Some(original_xmi_id.as_str()));
+
+        command.undo(&mut model).unwrap();
+        let ModelElement::Relationship(restored) = model.get(relationship_id).unwrap() else {
+            panic!("expected relationship");
+        };
+        assert_eq!(restored.kind, AssociationType::Association);
+        assert_eq!(restored.source_id, source_id);
+        assert_eq!(restored.target_id, target_id);
+        assert_eq!(restored.base.original_xmi_id.as_deref(), Some(original_xmi_id.as_str()));
+        command.execute(&mut model).unwrap();
+        assert_eq!(model.get(relationship_id).unwrap().base().name, "owns");
+    }
+
+    #[test]
+    fn update_relationship_rejects_invalid_snapshots_atomically() {
+        let (mut model, relationship_id, source_id, target_id) = relationship_fixture();
+        let before = model.get(relationship_id).unwrap().clone();
+        let mut replacement = Relationship::new_association(source_id, target_id);
+        replacement.base.id = UmlId::new();
+        assert!(UpdateRelationship::new(&model, relationship_id, replacement).is_err());
+        assert_eq!(model.get(relationship_id).unwrap(), &before);
+
+        let non_relationship = ModelElement::Class(Class::new("Not a relationship"));
+        let non_relationship_id = non_relationship.id();
+        model.insert(non_relationship);
+        let replacement = Relationship::new_association(source_id, target_id);
+        assert!(UpdateRelationship::new(&model, non_relationship_id, replacement).is_err());
+
+        let missing_id = UmlId::new();
+        assert!(UpdateRelationship::new(
+            &model,
+            missing_id,
+            Relationship::new_association(source_id, target_id)
+        )
+        .is_err());
+        assert_eq!(model.get(relationship_id).unwrap(), &before);
+    }
+
+    #[test]
+    fn update_relationship_rejects_repeated_transitions_without_mutation() {
+        let (mut model, relationship_id, source_id, target_id) = relationship_fixture();
+        let mut replacement = Relationship::new_dependency(source_id, target_id);
+        replacement.base.id = relationship_id;
+        replacement.base.name = "uses".into();
+        let mut command = UpdateRelationship::new(&model, relationship_id, replacement).unwrap();
+        command.execute(&mut model).unwrap();
+        let applied = model.get(relationship_id).unwrap().clone();
+        assert!(command.execute(&mut model).is_err());
+        assert_eq!(model.get(relationship_id).unwrap(), &applied);
+        command.undo(&mut model).unwrap();
+        let undone = model.get(relationship_id).unwrap().clone();
+        assert!(command.undo(&mut model).is_err());
+        assert_eq!(model.get(relationship_id).unwrap(), &undone);
     }
 }

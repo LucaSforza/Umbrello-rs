@@ -6,7 +6,7 @@
 
 pub mod commands;
 
-pub use commands::CreateEdge;
+pub use commands::{CreateDiagram, CreateEdge, UpdateRelationship};
 
 use std::fmt::Debug;
 
@@ -125,9 +125,16 @@ impl History {
             .undo_stack
             .pop()
             .ok_or_else(|| CommandError::InvalidOperation("nothing to undo".into()))?;
-        cmd.undo(model)?;
-        self.redo_stack.push(cmd);
-        Ok(())
+        match cmd.undo(model) {
+            Ok(()) => {
+                self.redo_stack.push(cmd);
+                Ok(())
+            },
+            Err(error) => {
+                self.undo_stack.push(cmd);
+                Err(error)
+            },
+        }
     }
 
     /// Redo the most recently undone command.
@@ -143,9 +150,16 @@ impl History {
             .redo_stack
             .pop()
             .ok_or_else(|| CommandError::InvalidOperation("nothing to redo".into()))?;
-        cmd.execute(model)?;
-        self.undo_stack.push(cmd);
-        Ok(())
+        match cmd.execute(model) {
+            Ok(()) => {
+                self.undo_stack.push(cmd);
+                Ok(())
+            },
+            Err(error) => {
+                self.redo_stack.push(cmd);
+                Err(error)
+            },
+        }
     }
 
     /// Returns `true` if there are commands to undo.
@@ -216,6 +230,36 @@ impl Default for History {
 mod tests {
     use super::*;
     use crate::elements::{Class, ModelElement};
+
+    #[derive(Debug)]
+    struct FailingCommand {
+        fail_undo: bool,
+        fail_redo: bool,
+        redo_phase: bool,
+    }
+
+    impl Command for FailingCommand {
+        fn execute(&mut self, _model: &mut UmlModel) -> Result<(), CommandError> {
+            if self.redo_phase && self.fail_redo {
+                return Err(CommandError::InvalidOperation("redo failed".into()));
+            }
+            self.redo_phase = false;
+            Ok(())
+        }
+
+        fn undo(&mut self, _model: &mut UmlModel) -> Result<(), CommandError> {
+            if self.fail_undo {
+                return Err(CommandError::InvalidOperation("undo failed".into()));
+            }
+            self.redo_phase = true;
+            Ok(())
+        }
+
+        #[allow(clippy::unnecessary_literal_bound)]
+        fn description(&self) -> &str {
+            "failing test command"
+        }
+    }
 
     /// Helper to get the element id before handing it to a command.
     fn capture_id_and_create(elem: ModelElement) -> (Box<dyn Command>, UmlId) {
@@ -322,5 +366,46 @@ mod tests {
 
         assert_eq!(model.len(), 1);
         assert!(!history.can_undo()); // not tracked
+    }
+
+    #[test]
+    fn failed_undo_and_redo_preserve_history_entries() {
+        let mut model = UmlModel::new();
+        let mut undo_history = History::new(10);
+        undo_history
+            .execute(
+                Box::new(FailingCommand {
+                    fail_undo: true,
+                    fail_redo: false,
+                    redo_phase: false,
+                }),
+                &mut model,
+            )
+            .unwrap();
+        assert!(undo_history.undo(&mut model).is_err());
+        assert_eq!(undo_history.undo_depth(), 1);
+        assert_eq!(undo_history.redo_depth(), 0);
+        assert!(undo_history.can_undo());
+        assert!(!undo_history.can_redo());
+
+        let mut redo_history = History::new(10);
+        redo_history
+            .execute(
+                Box::new(FailingCommand {
+                    fail_undo: false,
+                    fail_redo: true,
+                    redo_phase: false,
+                }),
+                &mut model,
+            )
+            .unwrap();
+        redo_history.undo(&mut model).unwrap();
+        assert_eq!(redo_history.undo_depth(), 0);
+        assert_eq!(redo_history.redo_depth(), 1);
+        assert!(redo_history.redo(&mut model).is_err());
+        assert_eq!(redo_history.undo_depth(), 0);
+        assert_eq!(redo_history.redo_depth(), 1);
+        assert!(!redo_history.can_undo());
+        assert!(redo_history.can_redo());
     }
 }
