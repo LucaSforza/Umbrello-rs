@@ -7,8 +7,8 @@
 
 use crate::app::UmbrelloApp;
 use uml_core::{
-    commands, Actor, Artifact, AssociationType, Class, Component, Datatype, Enum, Interface,
-    ModelElement, Node, Package, Point, Size, UmlId, UseCase,
+    commands, Actor, Artifact, AssociationType, Class, Component, Datatype, DiagramKind, Enum,
+    Interface, ModelElement, Node, Package, Point, Size, UmlId, UseCase,
 };
 
 /// The active tool in the tool palette.
@@ -151,6 +151,102 @@ impl ToolMode {
             _ => None,
         }
     }
+
+    /// Return whether this tool is valid for authoring on the given diagram.
+    ///
+    /// `Select` is valid for every diagram kind; the creation matrix is
+    /// intentionally limited to the four diagram kinds authored by S2.
+    #[must_use]
+    pub(crate) fn is_compatible_with_diagram(self, kind: DiagramKind) -> bool {
+        match kind {
+            DiagramKind::Class => matches!(
+                self,
+                Self::Select
+                    | Self::CreatePackage
+                    | Self::CreateClass
+                    | Self::CreateInterface
+                    | Self::CreateEnum
+                    | Self::CreateDatatype
+                    | Self::CreateGeneralization
+                    | Self::CreateRealization
+                    | Self::CreateAssociation
+                    | Self::CreateAggregation
+                    | Self::CreateComposition
+                    | Self::CreateDependency
+            ),
+            DiagramKind::UseCase => matches!(
+                self,
+                Self::Select
+                    | Self::CreatePackage
+                    | Self::CreateActor
+                    | Self::CreateUseCase
+                    | Self::CreateGeneralization
+                    | Self::CreateAssociation
+                    | Self::CreateDependency
+            ),
+            DiagramKind::Component => matches!(
+                self,
+                Self::Select
+                    | Self::CreatePackage
+                    | Self::CreateInterface
+                    | Self::CreateComponent
+                    | Self::CreateArtifact
+                    | Self::CreateGeneralization
+                    | Self::CreateRealization
+                    | Self::CreateAssociation
+                    | Self::CreateAggregation
+                    | Self::CreateComposition
+                    | Self::CreateDependency
+            ),
+            DiagramKind::Deployment => matches!(
+                self,
+                Self::Select
+                    | Self::CreateComponent
+                    | Self::CreateNode
+                    | Self::CreateArtifact
+                    | Self::CreateAssociation
+                    | Self::CreateDependency
+            ),
+            _ => matches!(self, Self::Select),
+        }
+    }
+}
+
+/// Return whether an existing semantic element may be newly shown on a
+/// diagram of the given kind. Relationships are semantic edges, never nodes.
+#[must_use]
+pub(crate) fn element_is_compatible_with_diagram(
+    element: &ModelElement,
+    kind: DiagramKind,
+) -> bool {
+    match kind {
+        DiagramKind::Class => matches!(
+            element,
+            ModelElement::Package(_)
+                | ModelElement::Class(_)
+                | ModelElement::Interface(_)
+                | ModelElement::Enum(_)
+                | ModelElement::Datatype(_)
+        ),
+        DiagramKind::UseCase => {
+            matches!(
+                element,
+                ModelElement::Package(_) | ModelElement::Actor(_) | ModelElement::UseCase(_)
+            )
+        },
+        DiagramKind::Component => matches!(
+            element,
+            ModelElement::Package(_)
+                | ModelElement::Interface(_)
+                | ModelElement::Component(_)
+                | ModelElement::Artifact(_)
+        ),
+        DiagramKind::Deployment => matches!(
+            element,
+            ModelElement::Component(_) | ModelElement::Node(_) | ModelElement::Artifact(_)
+        ),
+        _ => false,
+    }
 }
 
 impl UmbrelloApp {
@@ -215,6 +311,9 @@ impl UmbrelloApp {
     /// Place a newly created element on the active diagram at the given position.
     /// Executes one atomic model-and-view creation command.
     pub(crate) fn place_element(&mut self, tool: ToolMode, pos: Point) -> Result<(), String> {
+        if !tool.is_creation_tool() {
+            return Err("Current tool does not create a node".into());
+        }
         let diag_idx = self
             .active_diagram
             .ok_or_else(|| "No active diagram".to_string())?;
@@ -224,6 +323,17 @@ impl UmbrelloApp {
             .get(diag_idx)
             .ok_or_else(|| "Active diagram is unavailable".to_string())?
             .id;
+        if self.current_file_path.is_none() {
+            return Err("Create or open an XMI project first".into());
+        }
+        let kind = self.model.diagrams()[diag_idx].kind;
+        if !tool.is_compatible_with_diagram(kind) {
+            return Err(format!(
+                "{} is not compatible with {} diagrams",
+                tool.label(),
+                kind.as_str()
+            ));
+        }
 
         let elem = self.create_element_for_tool(tool);
         let command = commands::CreateElementWithNode::new(
@@ -253,7 +363,22 @@ impl UmbrelloApp {
         let diag_idx = self
             .active_diagram
             .ok_or_else(|| "No active diagram".to_string())?;
-        let diagram_id = self.model.diagrams()[diag_idx].id;
+        let diagram = self
+            .model
+            .diagrams()
+            .get(diag_idx)
+            .ok_or_else(|| "Active diagram is unavailable".to_string())?;
+        if self.current_file_path.is_none() {
+            return Err("Create or open an XMI project first".into());
+        }
+        if !self.current_tool.is_compatible_with_diagram(diagram.kind) {
+            return Err(format!(
+                "{} is not compatible with {} diagrams",
+                self.current_tool.label(),
+                diagram.kind.as_str()
+            ));
+        }
+        let diagram_id = diagram.id;
 
         self.execute_command_result(Box::new(commands::CreateEdge::new(
             diagram_id,
@@ -287,8 +412,13 @@ impl UmbrelloApp {
         ] {
             let selected = self.current_tool == *tool;
             let button = egui::SelectableLabel::new(selected, tool.label());
-            if ui.add(button).on_hover_text(tool.tooltip()).clicked() {
-                self.choose_tool(*tool);
+            let enabled = self.is_tool_available(*tool);
+            let response = ui.add_enabled(enabled, button);
+            let clicked = response.clicked();
+            if !enabled {
+                response.on_hover_text(self.tool_unavailable_reason(*tool));
+            } else if clicked {
+                let _ = self.choose_tool(*tool);
                 self.status_message = format!("Tool: {}", tool.label());
             }
         }
@@ -307,8 +437,13 @@ impl UmbrelloApp {
         ] {
             let selected = self.current_tool == *tool;
             let button = egui::SelectableLabel::new(selected, tool.label());
-            if ui.add(button).on_hover_text(tool.tooltip()).clicked() {
-                self.choose_tool(*tool);
+            let enabled = self.is_tool_available(*tool);
+            let response = ui.add_enabled(enabled, button);
+            let clicked = response.clicked();
+            if !enabled {
+                response.on_hover_text(self.tool_unavailable_reason(*tool));
+            } else if clicked {
+                let _ = self.choose_tool(*tool);
                 self.status_message = format!("Tool: {}", tool.label());
             }
         }

@@ -3,7 +3,7 @@
 use super::protocol::{QaError, QaRequest, QaResponse, UiSnapshot, UiTarget};
 use crate::app::UmbrelloApp;
 use crate::tool_palette::ToolMode;
-use uml_core::{commands, UmlId, Visibility};
+use uml_core::{commands, ModelElement, UmlId, Visibility};
 
 const TOOLS: &[(&str, ToolMode)] = &[
     ("select", ToolMode::Select),
@@ -79,7 +79,7 @@ impl UmbrelloApp {
             None,
             None,
         );
-        add("file.new".into(), "action", "New".into(), !self.is_dirty, false, None, None);
+        add("file.new".into(), "action", "New Project…".into(), true, false, None, None);
         add(
             "file.save".into(),
             "action",
@@ -89,29 +89,53 @@ impl UmbrelloApp {
             None,
             None,
         );
-        add("app.quit".into(), "action", "Quit".into(), !self.is_dirty, false, None, None);
+        add("app.quit".into(), "action", "Quit".into(), true, false, None, None);
         for &(name, tool) in TOOLS {
             add(
                 format!("tool.{name}"),
                 "tool",
                 tool.label().to_string(),
-                true,
+                self.is_tool_available(tool),
                 self.current_tool == tool,
                 None,
                 None,
             );
         }
-        if self.model.diagrams().is_empty() {
+        let can_create_diagram = self.current_file_path.is_some();
+        add(
+            "diagram.new".into(),
+            "action",
+            "New Diagram…".into(),
+            can_create_diagram,
+            false,
+            None,
+            None,
+        );
+        for (id, kind) in [
+            ("diagram.new.class", uml_core::DiagramKind::Class),
+            ("diagram.new.use_case", uml_core::DiagramKind::UseCase),
+            ("diagram.new.component", uml_core::DiagramKind::Component),
+            ("diagram.new.deployment", uml_core::DiagramKind::Deployment),
+        ] {
             add(
-                "diagram.new_class".into(),
+                id.into(),
                 "diagram",
-                "New Class Diagram".into(),
-                true,
+                format!("New {} Diagram", kind.as_str()),
+                can_create_diagram,
                 false,
                 None,
                 None,
             );
         }
+        add(
+            "diagram.new_class".into(),
+            "diagram",
+            "New Class Diagram".into(),
+            can_create_diagram,
+            false,
+            None,
+            None,
+        );
         for diagram in self.model.diagrams() {
             let id = diagram.id.to_string();
             add(
@@ -167,9 +191,79 @@ impl UmbrelloApp {
                     Some(diagram.id.to_string()),
                 );
             }
+            for edge in diagram.edges.values() {
+                let Some(ModelElement::Relationship(relationship)) =
+                    self.model.get(edge.relationship_id)
+                else {
+                    continue;
+                };
+                let source = self.model.get(relationship.source_id).map_or_else(
+                    || relationship.source_id.to_string(),
+                    |element| element.name().to_string(),
+                );
+                let target = self.model.get(relationship.target_id).map_or_else(
+                    || relationship.target_id.to_string(),
+                    |element| element.name().to_string(),
+                );
+                let relationship_id = relationship.base.id.to_string();
+                add(
+                    format!("edge:{relationship_id}"),
+                    "edge",
+                    format!("{}: {source} → {target}", relationship.kind.as_str()),
+                    true,
+                    false,
+                    Some(relationship_id),
+                    Some(diagram.id.to_string()),
+                );
+            }
+        }
+        let semantic_elements: Vec<_> = self
+            .model
+            .iter()
+            .map(|(id, element)| {
+                let label = if let ModelElement::Relationship(relationship) = element {
+                    let source = self.model.get(relationship.source_id).map_or_else(
+                        || relationship.source_id.to_string(),
+                        |item| item.name().to_string(),
+                    );
+                    let target = self.model.get(relationship.target_id).map_or_else(
+                        || relationship.target_id.to_string(),
+                        |item| item.name().to_string(),
+                    );
+                    format!("{}: {source} → {target}", relationship.kind.as_str())
+                } else {
+                    format!("{}: {}", element.object_type().as_str(), element.name())
+                };
+                (id, label)
+            })
+            .collect();
+        for (id, label) in semantic_elements {
+            let id_string = id.to_string();
+            add(
+                format!("element:{id_string}"),
+                "element",
+                label,
+                true,
+                false,
+                Some(id_string.clone()),
+                None,
+            );
+            add(
+                format!("element.add_to_diagram:{id_string}"),
+                "action",
+                "Add to active diagram".into(),
+                self.add_to_diagram_state(id).is_ok(),
+                false,
+                Some(id_string),
+                active_diagram.clone(),
+            );
         }
         if let Some(selected) = self.selected_element_id {
-            if self.model.get(selected).is_some() {
+            if self
+                .model
+                .get(selected)
+                .is_some_and(|element| !matches!(element, ModelElement::Relationship(_)))
+            {
                 add(
                     "property.name".into(),
                     "property",
@@ -199,26 +293,121 @@ impl UmbrelloApp {
                         None,
                     );
                 }
-                add(
-                    "property.abstract".into(),
-                    "property",
-                    "Abstract".into(),
-                    true,
-                    self.model
-                        .get(selected)
-                        .is_some_and(|e| e.base().is_abstract),
-                    Some(selected.to_string()),
-                    None,
-                );
-                add(
-                    "property.static".into(),
-                    "property",
-                    "Static".into(),
-                    true,
-                    self.model.get(selected).is_some_and(|e| e.base().is_static),
-                    Some(selected.to_string()),
-                    None,
-                );
+                if self
+                    .model
+                    .get(selected)
+                    .is_some_and(|element| element.classifier_data().is_some())
+                {
+                    add(
+                        "property.abstract".into(),
+                        "property",
+                        "Abstract".into(),
+                        true,
+                        self.model
+                            .get(selected)
+                            .is_some_and(|e| e.base().is_abstract),
+                        Some(selected.to_string()),
+                        None,
+                    );
+                    add(
+                        "property.static".into(),
+                        "property",
+                        "Static".into(),
+                        true,
+                        self.model.get(selected).is_some_and(|e| e.base().is_static),
+                        Some(selected.to_string()),
+                        None,
+                    );
+                }
+            }
+            if self
+                .model
+                .get(selected)
+                .is_some_and(|element| matches!(element, ModelElement::Relationship(_)))
+            {
+                let draft = self.relationship_draft.as_ref().map(|(_, draft)| draft);
+                let fields = [
+                    ("name", "Name"),
+                    ("documentation", "Documentation"),
+                    ("source_role", "Source role"),
+                    ("source_multiplicity", "Source multiplicity"),
+                    ("target_role", "Target role"),
+                    ("target_multiplicity", "Target multiplicity"),
+                ];
+                for (field, label) in fields {
+                    add(
+                        format!("property.relationship.{field}"),
+                        "property",
+                        label.into(),
+                        true,
+                        false,
+                        Some(selected.to_string()),
+                        None,
+                    );
+                }
+                for (kind, label) in [
+                    ("association", "Association"),
+                    ("generalization", "Generalization"),
+                    ("realization", "Realization"),
+                    ("aggregation", "Aggregation"),
+                    ("composition", "Composition"),
+                    ("dependency", "Dependency"),
+                ] {
+                    let association = match kind {
+                        "association" => uml_core::AssociationType::Association,
+                        "generalization" => uml_core::AssociationType::Generalization,
+                        "realization" => uml_core::AssociationType::Realization,
+                        "aggregation" => uml_core::AssociationType::Aggregation,
+                        "composition" => uml_core::AssociationType::Composition,
+                        _ => uml_core::AssociationType::Dependency,
+                    };
+                    add(
+                        format!("property.relationship.kind.{kind}"),
+                        "property",
+                        label.into(),
+                        self.relationship_kind_allowed(association)
+                            || draft.is_some_and(|draft| draft.kind == association),
+                        draft.is_some_and(|draft| draft.kind == association),
+                        Some(selected.to_string()),
+                        None,
+                    );
+                }
+                for (field, label, selected_value) in [
+                    (
+                        "source_navigable",
+                        "Source navigable",
+                        draft.is_some_and(|draft| draft.source_navigable),
+                    ),
+                    (
+                        "target_navigable",
+                        "Target navigable",
+                        draft.is_some_and(|draft| draft.target_navigable),
+                    ),
+                ] {
+                    add(
+                        format!("property.relationship.{field}"),
+                        "property",
+                        label.into(),
+                        true,
+                        selected_value,
+                        Some(selected.to_string()),
+                        None,
+                    );
+                }
+                for (id, label) in [
+                    ("property.relationship.apply", "Apply"),
+                    ("property.relationship.revert", "Revert"),
+                ] {
+                    add(
+                        id.into(),
+                        "property",
+                        label.into(),
+                        true,
+                        false,
+                        Some(selected.to_string()),
+                        None,
+                    );
+                }
             }
         }
         UiSnapshot {
@@ -336,11 +525,11 @@ impl UmbrelloApp {
             return self.qa_redo();
         }
         if id == "file.new" {
-            if self.is_dirty {
-                return Err(QaError::UnavailableTarget(id.into()));
-            }
-            self.menu_file_new();
-            return Ok(());
+            return if self.menu_file_new() {
+                Ok(())
+            } else {
+                Err(QaError::UnavailableTarget(id.into()))
+            };
         }
         if id == "file.save" {
             if self.current_file_path.is_none() {
@@ -351,7 +540,7 @@ impl UmbrelloApp {
             return Ok(());
         }
         if id == "app.quit" {
-            if self.is_dirty {
+            if !self.prompt_save_if_dirty() {
                 return Err(QaError::UnavailableTarget(id.into()));
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -383,11 +572,42 @@ impl UmbrelloApp {
                 .iter()
                 .find(|(candidate, _)| *candidate == name)
                 .ok_or_else(|| QaError::UnavailableTarget(id.into()))?;
-            self.choose_tool(*tool);
+            self.choose_tool(*tool).map_err(QaError::Command)?;
             return Ok(());
         }
-        if id == "diagram.new_class" {
-            self.new_class_diagram();
+        if let Some(raw) = id.strip_prefix("element.add_to_diagram:") {
+            let element_id = raw
+                .parse()
+                .map_err(|_| QaError::UnavailableTarget(id.into()))?;
+            self.add_element_to_active_diagram(element_id)
+                .map_err(QaError::Command)?;
+            return Ok(());
+        }
+        if let Some(raw) = id.strip_prefix("element:") {
+            let element_id = raw
+                .parse()
+                .map_err(|_| QaError::UnavailableTarget(id.into()))?;
+            self.select_element(element_id)?;
+            return Ok(());
+        }
+        if id == "diagram.new" {
+            self.open_new_diagram_dialog();
+            return Ok(());
+        }
+        if id == "diagram.new_class" || id == "diagram.new.class" {
+            self.create_supported_diagram(uml_core::DiagramKind::Class)?;
+            return Ok(());
+        }
+        if id == "diagram.new.use_case" {
+            self.create_supported_diagram(uml_core::DiagramKind::UseCase)?;
+            return Ok(());
+        }
+        if id == "diagram.new.component" {
+            self.create_supported_diagram(uml_core::DiagramKind::Component)?;
+            return Ok(());
+        }
+        if id == "diagram.new.deployment" {
+            self.create_supported_diagram(uml_core::DiagramKind::Deployment)?;
             return Ok(());
         }
         if let Some(raw) = id.strip_prefix("diagram:") {
@@ -397,8 +617,7 @@ impl UmbrelloApp {
                 .iter()
                 .position(|diagram| diagram.id.to_string() == raw)
                 .ok_or_else(|| QaError::UnavailableTarget(id.into()))?;
-            self.active_diagram = Some(index);
-            self.bump_state();
+            self.activate_diagram_index(index);
             return Ok(());
         }
         if id == "canvas" {
@@ -409,7 +628,8 @@ impl UmbrelloApp {
             if self.current_tool.is_creation_tool() {
                 self.place_element(self.current_tool, uml_core::Point::new(x, y))
                     .map_err(QaError::Command)?;
-                self.choose_tool(ToolMode::Select);
+                self.choose_tool(ToolMode::Select)
+                    .map_err(QaError::Command)?;
                 return Ok(());
             }
             if self.current_tool == ToolMode::Select {
@@ -424,8 +644,71 @@ impl UmbrelloApp {
             self.select_element(element)?;
             return Ok(());
         }
+        if let Some(raw) = id.strip_prefix("edge:") {
+            let relationship_id = raw
+                .parse()
+                .map_err(|_| QaError::UnavailableTarget(id.into()))?;
+            self.select_element(relationship_id)?;
+            return Ok(());
+        }
         if id == "property.name" || id == "property.documentation" {
             return Ok(());
+        }
+        if id == "property.relationship.apply" {
+            let selected = self
+                .selected_element_id
+                .ok_or_else(|| QaError::UnavailableTarget(id.into()))?;
+            match self.apply_relationship_draft(selected) {
+                Ok(true) => self.status_message = "Relationship updated".into(),
+                Ok(false) => self.status_message = "Relationship unchanged (no changes)".into(),
+                Err(error) => {
+                    self.status_message = format!("Relationship apply failed: {error}");
+                    return Err(QaError::Command(error));
+                },
+            }
+            return Ok(());
+        }
+        if id == "property.relationship.revert" {
+            self.refresh_property_buffers();
+            self.status_message = "Relationship draft reverted".into();
+            return Ok(());
+        }
+        if let Some(kind) = id.strip_prefix("property.relationship.kind.") {
+            let kind = match kind {
+                "association" => uml_core::AssociationType::Association,
+                "generalization" => uml_core::AssociationType::Generalization,
+                "realization" => uml_core::AssociationType::Realization,
+                "aggregation" => uml_core::AssociationType::Aggregation,
+                "composition" => uml_core::AssociationType::Composition,
+                "dependency" => uml_core::AssociationType::Dependency,
+                _ => return Err(QaError::UnavailableTarget(id.into())),
+            };
+            if !self.relationship_kind_allowed(kind)
+                && self
+                    .relationship_draft
+                    .as_ref()
+                    .is_none_or(|(_, draft)| draft.kind != kind)
+            {
+                return Err(QaError::UnavailableTarget(id.into()));
+            }
+            if let Some((_, draft)) = self.relationship_draft.as_mut() {
+                draft.kind = kind;
+            }
+            self.bump_state();
+            return Ok(());
+        }
+        for (suffix, source) in [("source_navigable", true), ("target_navigable", false)] {
+            if id == format!("property.relationship.{suffix}") {
+                if let Some((_, draft)) = self.relationship_draft.as_mut() {
+                    if source {
+                        draft.source_navigable = !draft.source_navigable;
+                    } else {
+                        draft.target_navigable = !draft.target_navigable;
+                    }
+                    self.bump_state();
+                    return Ok(());
+                }
+            }
         }
         if let Some(value) = id.strip_prefix("property.visibility.") {
             let visibility = match value {
@@ -453,6 +736,9 @@ impl UmbrelloApp {
                     .model
                     .get(selected)
                     .ok_or_else(|| QaError::UnavailableTarget(id.into()))?;
+                if elem.classifier_data().is_none() {
+                    return Err(QaError::UnavailableTarget(id.into()));
+                }
                 self.set_flags(
                     selected,
                     if is_abstract {
@@ -474,14 +760,62 @@ impl UmbrelloApp {
 
     fn qa_set_text(&mut self, id: &str, value: String) -> Result<(), QaError> {
         self.require_selected(id)?;
+        if id == "file.new" {
+            if self.is_dirty {
+                return Err(QaError::InvalidValue(
+                    "save the current project before creating a new project".into(),
+                ));
+            }
+            let path = std::path::PathBuf::from(value.trim());
+            if !path.is_absolute()
+                || path.extension().and_then(|extension| extension.to_str()) != Some("xmi")
+            {
+                return Err(QaError::InvalidValue(
+                    "file.new requires an absolute .xmi path".into(),
+                ));
+            }
+            self.new_project_at(&path)
+                .map_err(|error| QaError::Command(error.to_string()))?;
+            return Ok(());
+        }
         let selected = self
             .selected_element_id
             .ok_or_else(|| QaError::UnavailableTarget(id.into()))?;
         match id {
             "property.name" => self.rename_element(selected, value),
             "property.documentation" => self.set_documentation(selected, value),
+            "property.relationship.name" => {
+                self.set_relationship_draft_text(|draft| draft.name = value)
+            },
+            "property.relationship.documentation" => {
+                self.set_relationship_draft_text(|draft| draft.documentation = value)
+            },
+            "property.relationship.source_role" => {
+                self.set_relationship_draft_text(|draft| draft.source_role = value)
+            },
+            "property.relationship.source_multiplicity" => {
+                self.set_relationship_draft_text(|draft| draft.source_multiplicity = value)
+            },
+            "property.relationship.target_role" => {
+                self.set_relationship_draft_text(|draft| draft.target_role = value)
+            },
+            "property.relationship.target_multiplicity" => {
+                self.set_relationship_draft_text(|draft| draft.target_multiplicity = value)
+            },
             _ => Err(QaError::UnavailableTarget(id.into())),
         }
+    }
+
+    fn set_relationship_draft_text<F>(&mut self, update: F) -> Result<(), QaError>
+    where
+        F: FnOnce(&mut crate::app::RelationshipDraft),
+    {
+        let Some((_, draft)) = self.relationship_draft.as_mut() else {
+            return Err(QaError::UnavailableTarget("relationship draft".into()));
+        };
+        update(draft);
+        self.bump_state();
+        Ok(())
     }
 
     fn qa_drag(
@@ -535,7 +869,8 @@ impl UmbrelloApp {
                 .parse()
                 .map_err(|_| QaError::UnavailableTarget(target_id.clone()))?;
             self.place_edge(source, target).map_err(QaError::Command)?;
-            self.choose_tool(ToolMode::Select);
+            self.choose_tool(ToolMode::Select)
+                .map_err(QaError::Command)?;
             return Ok(());
         }
         let (x, y) = position.ok_or(QaError::InvalidCoordinates)?;
@@ -565,11 +900,28 @@ impl UmbrelloApp {
         if !self.history.can_undo() {
             return Err(QaError::UnavailableTarget("history.undo".into()));
         }
+        let prior_active = self
+            .active_diagram
+            .and_then(|index| self.model.diagrams().get(index).map(|diagram| diagram.id));
+        let prior_index = self.active_diagram;
         self.history
             .undo(&mut self.model)
             .map_err(|e| QaError::Command(e.to_string()))?;
+        self.active_diagram = prior_active.and_then(|id| {
+            self.model
+                .diagrams()
+                .iter()
+                .position(|diagram| diagram.id == id)
+        });
+        if self.active_diagram.is_none() {
+            self.active_diagram = prior_index
+                .map(|index| index.min(self.model.diagrams().len().saturating_sub(1)))
+                .filter(|_| !self.model.diagrams().is_empty());
+        }
+        self.normalize_transient_state();
         self.refresh_name_edit_buffer();
         self.is_dirty = true;
+        self.status_message = "Undo".into();
         self.bump_state();
         Ok(())
     }
@@ -611,11 +963,35 @@ impl UmbrelloApp {
         if !self.history.can_redo() {
             return Err(QaError::UnavailableTarget("history.redo".into()));
         }
+        let prior_active = self
+            .active_diagram
+            .and_then(|index| self.model.diagrams().get(index).map(|diagram| diagram.id));
+        let diagram_ids_before: std::collections::HashSet<_> = self
+            .model
+            .diagrams()
+            .iter()
+            .map(|diagram| diagram.id)
+            .collect();
         self.history
             .redo(&mut self.model)
             .map_err(|e| QaError::Command(e.to_string()))?;
+        self.active_diagram = prior_active.and_then(|id| {
+            self.model
+                .diagrams()
+                .iter()
+                .position(|diagram| diagram.id == id)
+        });
+        if self.active_diagram.is_none() {
+            self.active_diagram = self
+                .model
+                .diagrams()
+                .iter()
+                .position(|diagram| !diagram_ids_before.contains(&diagram.id));
+        }
+        self.normalize_transient_state();
         self.refresh_name_edit_buffer();
         self.is_dirty = true;
+        self.status_message = "Redo".into();
         self.bump_state();
         Ok(())
     }
@@ -626,14 +1002,30 @@ impl UmbrelloApp {
     fn qa_redo(&mut self) -> Result<(), QaError> {
         self.redo_action()
     }
-    pub(crate) fn choose_tool(&mut self, tool: ToolMode) {
+    pub(crate) fn choose_tool(&mut self, tool: ToolMode) -> Result<(), String> {
+        if !self.is_tool_available(tool) {
+            self.status_message = self.tool_unavailable_reason(tool).into();
+            return Err(self.status_message.clone());
+        }
         self.current_tool = tool;
         self.preview_position = None;
         self.drag_source_node_id = None;
         self.bump_state();
+        Ok(())
     }
     pub(crate) fn activate_diagram_index(&mut self, index: usize) {
+        if self.model.diagrams().get(index).is_none() {
+            self.status_message = "Diagram is unavailable".into();
+            return;
+        }
         self.active_diagram = Some(index);
+        if !self.is_tool_available(self.current_tool) {
+            self.current_tool = ToolMode::Select;
+            self.preview_position = None;
+            self.drag_source_node_id = None;
+            self.drag_node_id = None;
+            self.drag_start_pos = None;
+        }
         self.bump_state();
     }
     pub(crate) fn select_element(&mut self, id: UmlId) -> Result<(), QaError> {
@@ -641,30 +1033,62 @@ impl UmbrelloApp {
             return Err(QaError::UnavailableTarget(format!("node:{id}")));
         }
         self.selected_element_id = Some(id);
-        self.name_edit_buffer = self
-            .model
-            .get(id)
-            .map_or_else(String::new, |e| e.name().into());
+        self.refresh_property_buffers();
         self.bump_state();
         Ok(())
     }
-    fn refresh_name_edit_buffer(&mut self) {
-        self.name_edit_buffer = self
-            .selected_element_id
-            .and_then(|id| self.model.get(id))
-            .map_or_else(String::new, |element| element.name().to_string());
-    }
-    pub(crate) fn new_class_diagram(&mut self) {
-        let mut diagram = uml_core::Diagram::new("Main", uml_core::DiagramKind::Class);
-        for (id, element) in self.model.iter() {
-            if element.is_classifier() {
-                diagram.add_node(
-                    id,
-                    uml_core::ViewNode::new(id, uml_core::Rect::new(50.0, 50.0, 160.0, 60.0)),
-                );
-            }
+
+    pub(crate) fn add_element_to_active_diagram(&mut self, id: UmlId) -> Result<(), String> {
+        if self.current_file_path.is_none() {
+            return Err("Create or open an XMI project first".into());
         }
-        self.model.add_diagram(diagram);
-        self.bump_state();
+        let diagram_index = self
+            .active_diagram
+            .ok_or_else(|| "No active diagram".to_string())?;
+        let diagram = self
+            .model
+            .diagrams()
+            .get(diagram_index)
+            .ok_or_else(|| "Active diagram is unavailable".to_string())?;
+        let element = self
+            .model
+            .get(id)
+            .ok_or_else(|| format!("Element {id} is unavailable"))?;
+        if matches!(element, ModelElement::Relationship(_)) {
+            return Err("Relationships cannot be added as nodes".into());
+        }
+        if !crate::tool_palette::element_is_compatible_with_diagram(element, diagram.kind) {
+            return Err(format!(
+                "{} is not compatible with {} diagrams",
+                element.object_type().as_str(),
+                diagram.kind.as_str()
+            ));
+        }
+        if diagram.get_node(id).is_some() {
+            return Err("Element is already present on the active diagram".into());
+        }
+        let node_count = diagram.nodes.len();
+        let position = uml_core::Point::new(
+            50.0 + f64::from((node_count % 4) as u32) * 220.0,
+            50.0 + f64::from((node_count / 4) as u32) * 120.0,
+        );
+        let command = commands::AddNodeToDiagram::new(
+            diagram.id,
+            id,
+            position,
+            uml_core::Size::new(160.0, 60.0),
+        );
+        self.execute_command_result(Box::new(command))
+            .map_err(|error| error.to_string())
+    }
+    fn refresh_name_edit_buffer(&mut self) {
+        self.refresh_property_buffers();
+    }
+    pub(crate) fn create_supported_diagram(
+        &mut self,
+        kind: uml_core::DiagramKind,
+    ) -> Result<uml_core::DiagramId, QaError> {
+        let name = self.unique_diagram_name(kind);
+        self.create_diagram(kind, name).map_err(QaError::Command)
     }
 }

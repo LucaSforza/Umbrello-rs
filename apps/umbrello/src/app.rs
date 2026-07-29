@@ -21,6 +21,20 @@ pub(crate) mod qa;
 pub(crate) mod viewport;
 use uml_core::{Command, UmlId, UmlModel};
 
+/// Persistent relationship values edited by the inspector before Apply.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RelationshipDraft {
+    pub(crate) kind: uml_core::AssociationType,
+    pub(crate) name: String,
+    pub(crate) documentation: String,
+    pub(crate) source_role: String,
+    pub(crate) source_multiplicity: String,
+    pub(crate) target_role: String,
+    pub(crate) target_multiplicity: String,
+    pub(crate) source_navigable: bool,
+    pub(crate) target_navigable: bool,
+}
+
 type QaReply = SyncSender<Result<self::qa::protocol::QaResponse, self::qa::protocol::QaError>>;
 struct PendingQaReply {
     reply: QaReply,
@@ -43,6 +57,7 @@ pub(crate) struct UmbrelloApp {
     pub(crate) active_diagram: Option<usize>,
     pub(crate) drag_node_id: Option<uml_core::UmlId>,
     pub(crate) drag_start_pos: Option<egui::Pos2>,
+    pub(crate) drag_preview_pos: Option<uml_core::Point>,
     pub(crate) status_message: String,
     /// REVIEW CONDITION C1: Track whether model was loaded from XMI.
     #[allow(dead_code)]
@@ -70,6 +85,12 @@ pub(crate) struct UmbrelloApp {
     /// Populated when a new element is selected; flushed to RenameElement on commit.
     pub(crate) name_edit_buffer: String,
 
+    /// Persistent documentation editor buffer for ordinary elements.
+    pub(crate) documentation_edit_buffer: String,
+
+    /// Relationship draft and the semantic element it belongs to.
+    pub(crate) relationship_draft: Option<(UmlId, RelationshipDraft)>,
+
     /// When an edge tool is active, this tracks the source node of a click-drag.
     /// Set to `Some(id)` on mousedown over a node; cleared on mouseup or Escape.
     pub(crate) drag_source_node_id: Option<UmlId>,
@@ -86,6 +107,9 @@ pub(crate) struct UmbrelloApp {
     pending_screenshots: HashMap<u64, PendingScreenshot>,
     pending_syncs: Vec<(u64, PendingQaReply)>,
     pub(crate) next_screenshot_id: u64,
+    pub(crate) new_diagram_open: bool,
+    pub(crate) new_diagram_name: String,
+    pub(crate) new_diagram_kind: uml_core::DiagramKind,
 }
 
 impl UmbrelloApp {
@@ -102,6 +126,7 @@ impl UmbrelloApp {
             active_diagram: None,
             drag_node_id: None,
             drag_start_pos: None,
+            drag_preview_pos: None,
             status_message: msg,
             loaded_from_xmi: loaded,
             current_file_path: None,
@@ -113,6 +138,8 @@ impl UmbrelloApp {
             last_canvas_rect: None,
             selected_element_id: None,
             name_edit_buffer: String::new(),
+            documentation_edit_buffer: String::new(),
+            relationship_draft: None,
             drag_source_node_id: None,
             pointer_was_down: false,
             selected_qa_target: None,
@@ -123,6 +150,9 @@ impl UmbrelloApp {
             pending_screenshots: HashMap::new(),
             pending_syncs: Vec::new(),
             next_screenshot_id: 1,
+            new_diagram_open: false,
+            new_diagram_name: String::new(),
+            new_diagram_kind: uml_core::DiagramKind::Class,
         }
     }
 
@@ -144,6 +174,109 @@ impl UmbrelloApp {
 
     pub(crate) fn clear_viewport_pans(&mut self) {
         self.viewport_pans.clear();
+    }
+
+    pub(crate) fn active_diagram_kind(&self) -> Option<uml_core::DiagramKind> {
+        self.active_diagram
+            .and_then(|index| self.model.diagrams().get(index).map(|diagram| diagram.kind))
+    }
+
+    pub(crate) fn is_tool_available(&self, tool: crate::tool_palette::ToolMode) -> bool {
+        if tool != crate::tool_palette::ToolMode::Select && self.current_file_path.is_none() {
+            return false;
+        }
+        self.active_diagram_kind()
+            .is_some_and(|kind| tool.is_compatible_with_diagram(kind))
+    }
+
+    pub(crate) fn tool_unavailable_reason(
+        &self,
+        tool: crate::tool_palette::ToolMode,
+    ) -> &'static str {
+        if tool != crate::tool_palette::ToolMode::Select && self.current_file_path.is_none() {
+            return "Create or open an XMI project before authoring elements";
+        }
+        if let Some(kind) = self.active_diagram_kind() {
+            if !tool.is_compatible_with_diagram(kind) {
+                return "This tool is not supported by the active diagram kind";
+            }
+        } else {
+            return "Select or create a supported diagram first";
+        }
+        "Tool unavailable"
+    }
+
+    pub(crate) fn normalize_transient_state(&mut self) {
+        if self
+            .active_diagram
+            .is_some_and(|index| index >= self.model.diagrams().len())
+        {
+            self.active_diagram = None;
+        }
+        if self
+            .selected_element_id
+            .is_some_and(|id| self.model.get(id).is_none())
+        {
+            self.selected_element_id = None;
+            self.name_edit_buffer.clear();
+            self.documentation_edit_buffer.clear();
+            self.relationship_draft = None;
+        }
+        if self.selected_element_id.is_none() {
+            self.documentation_edit_buffer.clear();
+            self.relationship_draft = None;
+        }
+        self.current_tool = crate::tool_palette::ToolMode::Select;
+        self.preview_position = None;
+        self.drag_source_node_id = None;
+        self.drag_node_id = None;
+        self.drag_start_pos = None;
+        self.drag_preview_pos = None;
+    }
+
+    pub(crate) fn clear_selection(&mut self) {
+        self.selected_element_id = None;
+        self.name_edit_buffer.clear();
+        self.documentation_edit_buffer.clear();
+        self.relationship_draft = None;
+    }
+
+    pub(crate) fn refresh_property_buffers(&mut self) {
+        let Some(id) = self.selected_element_id else {
+            self.name_edit_buffer.clear();
+            self.documentation_edit_buffer.clear();
+            self.relationship_draft = None;
+            return;
+        };
+        let Some(element) = self.model.get(id) else {
+            self.clear_selection();
+            return;
+        };
+        self.name_edit_buffer = element.name().to_string();
+        self.documentation_edit_buffer = element.base().documentation.clone();
+        self.relationship_draft = match element {
+            uml_core::ModelElement::Relationship(relationship) => Some((
+                id,
+                RelationshipDraft {
+                    kind: relationship.kind,
+                    name: relationship.base.name.clone(),
+                    documentation: relationship.base.documentation.clone(),
+                    source_role: relationship.source_role_name.clone().unwrap_or_default(),
+                    source_multiplicity: relationship
+                        .source_multiplicity
+                        .clone()
+                        .unwrap_or_default(),
+                    target_role: relationship.target_role_name.clone().unwrap_or_default(),
+                    target_multiplicity: relationship
+                        .target_multiplicity
+                        .clone()
+                        .unwrap_or_default(),
+                    source_navigable: relationship.source_to_target_navigable,
+                    target_navigable: relationship.target_to_source_navigable,
+                },
+            )),
+            _ => None,
+        };
     }
 
     /// Set the current file path (used after CLI loading).
@@ -171,6 +304,144 @@ impl UmbrelloApp {
 
     pub(crate) fn bump_state(&mut self) {
         self.state_revision = self.state_revision.saturating_add(1);
+    }
+
+    pub(crate) fn open_new_diagram_dialog(&mut self) {
+        if self.current_file_path.is_none() {
+            self.status_message = "Create or open an XMI project before adding diagrams".into();
+            return;
+        }
+        self.new_diagram_kind = uml_core::DiagramKind::Class;
+        self.new_diagram_name = self.unique_diagram_name(self.new_diagram_kind);
+        self.new_diagram_open = true;
+    }
+
+    #[allow(dead_code)] // Direct state helper used by tests and future non-egui callers.
+    pub(crate) fn set_new_diagram_kind(&mut self, kind: uml_core::DiagramKind) {
+        let previous_kind = self.new_diagram_kind;
+        self.apply_new_diagram_kind_transition(previous_kind, kind);
+    }
+
+    pub(crate) fn apply_new_diagram_kind_transition(
+        &mut self,
+        previous_kind: uml_core::DiagramKind,
+        new_kind: uml_core::DiagramKind,
+    ) {
+        if previous_kind != new_kind {
+            self.new_diagram_kind = new_kind;
+            self.new_diagram_name = self.unique_diagram_name(new_kind);
+        }
+    }
+
+    pub(crate) fn unique_diagram_name(&self, kind: uml_core::DiagramKind) -> String {
+        self.generate_unique_diagram_name(kind.as_str())
+    }
+
+    pub(crate) fn generate_unique_diagram_name(&self, base: &str) -> String {
+        let existing: std::collections::HashSet<&str> = self
+            .model
+            .diagrams()
+            .iter()
+            .map(|diagram| diagram.name.as_str())
+            .collect();
+        let prefix = format!("{base}_");
+        let mut suffixes: Vec<u64> = existing
+            .iter()
+            .filter_map(|name| name.strip_prefix(&prefix)?.parse().ok())
+            .collect();
+        suffixes.sort_unstable();
+        let next = (1_u64..)
+            .find(|candidate| suffixes.binary_search(candidate).is_err())
+            .unwrap_or(1);
+        format!("{base}_{next}")
+    }
+
+    pub(crate) fn create_diagram(
+        &mut self,
+        kind: uml_core::DiagramKind,
+        name: String,
+    ) -> Result<uml_core::DiagramId, String> {
+        if self.current_file_path.is_none() {
+            return Err("create or open an XMI project before adding diagrams".into());
+        }
+        if !matches!(
+            kind,
+            uml_core::DiagramKind::Class
+                | uml_core::DiagramKind::UseCase
+                | uml_core::DiagramKind::Component
+                | uml_core::DiagramKind::Deployment
+        ) {
+            return Err(format!("unsupported diagram kind: {}", kind.as_str()));
+        }
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("diagram name cannot be empty".into());
+        }
+        let diagram = uml_core::Diagram::new(name, kind);
+        let diagram_id = diagram.id;
+        let command = uml_core::commands::CreateDiagram::new(&self.model, diagram)
+            .map_err(|error| error.to_string())?;
+        self.execute_command_result(Box::new(command))
+            .map_err(|error| error.to_string())?;
+        self.active_diagram = self
+            .model
+            .diagrams()
+            .iter()
+            .position(|candidate| candidate.id == diagram_id);
+        self.normalize_transient_state();
+        self.active_diagram = self
+            .model
+            .diagrams()
+            .iter()
+            .position(|candidate| candidate.id == diagram_id);
+        self.bump_state();
+        Ok(diagram_id)
+    }
+
+    pub(crate) fn render_new_diagram_dialog(&mut self, ctx: &egui::Context) {
+        if !self.new_diagram_open {
+            return;
+        }
+        let mut open = self.new_diagram_open;
+        egui::Window::new("New Diagram")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Diagram type");
+                let previous_kind = self.new_diagram_kind;
+                for kind in [
+                    uml_core::DiagramKind::Class,
+                    uml_core::DiagramKind::UseCase,
+                    uml_core::DiagramKind::Component,
+                    uml_core::DiagramKind::Deployment,
+                ] {
+                    ui.radio_value(&mut self.new_diagram_kind, kind, kind.as_str());
+                }
+                if self.new_diagram_kind != previous_kind {
+                    self.apply_new_diagram_kind_transition(previous_kind, self.new_diagram_kind);
+                }
+                ui.separator();
+                ui.label("Name");
+                ui.text_edit_singleline(&mut self.new_diagram_name);
+                ui.horizontal(|ui| {
+                    if ui.button("Create").clicked() {
+                        if self
+                            .create_diagram(self.new_diagram_kind, self.new_diagram_name.clone())
+                            .is_ok()
+                        {
+                            self.new_diagram_open = false;
+                            self.new_diagram_name.clear();
+                        } else {
+                            self.status_message = "Diagram name cannot be empty".into();
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.new_diagram_open = false;
+                    }
+                });
+            });
+        self.new_diagram_open = open && self.new_diagram_open;
     }
 
     #[allow(dead_code)]
@@ -401,9 +672,15 @@ impl eframe::App for UmbrelloApp {
             .resizable(true)
             .default_width(250.0)
             .show(ctx, |ui| {
-                self.render_tool_palette(ui);
-                ui.add_space(8.0);
-                self.render_tree(ui);
+                self.render_new_diagram_control(ui);
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        self.render_tool_palette(ui);
+                        ui.add_space(8.0);
+                        self.render_tree(ui);
+                    });
             });
         egui::CentralPanel::default().show(ctx, |ui| {
             self.render_canvas(ui);
@@ -443,56 +720,73 @@ impl eframe::App for UmbrelloApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
+        if !ctx.wants_keyboard_input()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Z))
+            && self.undo_action().is_ok()
+        {
+            self.status_message = "Undo".into();
+        }
+        if !ctx.wants_keyboard_input()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Y))
+            && self.redo_action().is_ok()
+        {
+            self.status_message = "Redo".into();
+        }
+
         // ── Tool keyboard shortcuts ──────────────────────────────────
         // Only activate when no text input has focus.
         if !ctx.wants_keyboard_input() {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::S)) {
-                self.choose_tool(crate::tool_palette::ToolMode::Select);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::Select);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::C)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateClass);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateClass);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::I)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateInterface);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateInterface);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::E)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateEnum);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateEnum);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::D)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateDatatype);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateDatatype);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::P)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreatePackage);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreatePackage);
             }
             // ── Edge tool keyboard shortcuts (M19) ──
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::G)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateGeneralization);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateGeneralization);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::R)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateRealization);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateRealization);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::A)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateAssociation);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateAssociation);
             }
             // 'N' (without Ctrl) is for Dependency; Ctrl+N is New File, handled above.
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::N)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateDependency);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateDependency);
                 self.drag_source_node_id = None;
             }
             // ── Actor (T) & UseCase (U) keyboard shortcuts (M20) ──
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::T)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateActor);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateActor);
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::U)) {
-                self.choose_tool(crate::tool_palette::ToolMode::CreateUseCase);
+                let _ = self.choose_tool(crate::tool_palette::ToolMode::CreateUseCase);
             }
             // Note: Aggregation and Composition have no single-key shortcut
             // because 'C' is already used for Class and 'G' is for Generalization.
             // Use the tool palette buttons for these.
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                if self.selected_element_id.is_some() {
-                    self.selected_element_id = None;
-                    self.name_edit_buffer.clear();
+                if self.drag_node_id.is_some() {
+                    self.drag_node_id = None;
+                    self.drag_start_pos = None;
+                    self.drag_preview_pos = None;
+                    self.status_message = "Node drag cancelled".into();
+                } else if self.selected_element_id.is_some() {
+                    self.clear_selection();
                     self.status_message = "Selection cleared".into();
                 } else if self.drag_source_node_id.is_some() {
                     self.drag_source_node_id = None;
@@ -502,10 +796,9 @@ impl eframe::App for UmbrelloApp {
                     self.preview_position = None;
                 }
             }
-
-            // Update status message if tool changed via keyboard shortcut
-            self.status_message = format!("Tool: {}", self.current_tool.label());
         }
+
+        self.render_new_diagram_dialog(ctx);
 
         // Update window title
         self.update_title(ctx);

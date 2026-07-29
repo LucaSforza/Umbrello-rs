@@ -15,7 +15,7 @@ impl UmbrelloApp {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("New\tCtrl+N").clicked() {
+                    if ui.button("New Project…\tCtrl+N").clicked() {
                         self.menu_file_new();
                         ui.close_menu();
                     }
@@ -48,11 +48,7 @@ impl UmbrelloApp {
                     }
                 });
                 ui.menu_button("Edit", |ui| {
-                    if ui.button("Undo").clicked()
-                        || (ui
-                            .ctx()
-                            .input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.ctrl))
-                    {
+                    if ui.button("Undo").clicked() {
                         if self.history.can_undo() {
                             let _ = self.undo_action();
                             self.is_dirty = true;
@@ -60,11 +56,7 @@ impl UmbrelloApp {
                         }
                         ui.close_menu();
                     }
-                    if ui.button("Redo").clicked()
-                        || (ui
-                            .ctx()
-                            .input(|i| i.key_pressed(egui::Key::Y) && i.modifiers.ctrl))
-                    {
+                    if ui.button("Redo").clicked() {
                         if self.history.can_redo() {
                             let _ = self.redo_action();
                             self.is_dirty = true;
@@ -134,17 +126,25 @@ impl UmbrelloApp {
     }
 
     /// File > New: create a new empty model.
-    pub(crate) fn menu_file_new(&mut self) {
+    pub(crate) fn menu_file_new(&mut self) -> bool {
         if !self.prompt_save_if_dirty() {
-            return;
+            return false;
         }
-        self.model = UmlModel::new();
-        self.history.clear();
-        self.active_diagram = None;
-        self.clear_viewport_pans();
-        self.current_file_path = None;
-        self.is_dirty = false;
-        self.status_message = "New model created".into();
+        let Some(mut path) = rfd::FileDialog::new()
+            .add_filter("XMI files", &["xmi"])
+            .save_file()
+        else {
+            return false;
+        };
+        if path.extension().is_none_or(|ext| ext != "xmi") {
+            path.set_extension("xmi");
+        }
+        if let Err(error) = self.new_project_at(&path) {
+            self.show_save_error(&path, error.to_string());
+            false
+        } else {
+            true
+        }
     }
 
     /// File > Open: load an XMI file via native dialog.
@@ -169,6 +169,12 @@ impl UmbrelloApp {
                 self.current_file_path = Some(path.clone());
                 self.is_dirty = false;
                 self.loaded_from_xmi = true;
+                self.new_diagram_open = false;
+                self.new_diagram_name.clear();
+                self.selected_qa_target = None;
+                self.selected_element_id = None;
+                self.name_edit_buffer.clear();
+                self.normalize_transient_state();
                 self.status_message = format!(
                     "Loaded: {} ({} elements, {} diagrams)",
                     path.display(),
@@ -189,23 +195,16 @@ impl UmbrelloApp {
     }
 
     /// File > Save: save to current file path, or delegate to Save As if none.
-    pub(crate) fn menu_file_save(&mut self) {
+    pub(crate) fn menu_file_save(&mut self) -> bool {
         if self.current_file_path.is_none() {
-            self.menu_file_save_as();
-            return;
+            return self.menu_file_save_as();
         }
         if let Err(error) = self.save_current() {
-            let path = self
-                .current_file_path
-                .as_ref()
-                .map_or_else(|| "<none>".into(), |p| p.display().to_string());
-            let msg = format!("Could not save '{path}':\n{error}");
-            rfd::MessageDialog::new()
-                .set_title("Error Saving File")
-                .set_description(&msg)
-                .set_buttons(rfd::MessageButtons::Ok)
-                .show();
-            self.status_message = format!("Error saving {path}: {error}");
+            let path = self.current_file_path.clone().unwrap_or_default();
+            self.show_save_error(&path, error.to_string());
+            false
+        } else {
+            true
         }
     }
 
@@ -224,12 +223,12 @@ impl UmbrelloApp {
     }
 
     /// File > Save As: prompt for a path and save.
-    pub(crate) fn menu_file_save_as(&mut self) {
+    pub(crate) fn menu_file_save_as(&mut self) -> bool {
         let file = rfd::FileDialog::new()
             .add_filter("XMI files", &["xmi"])
             .save_file();
         let Some(mut path) = file else {
-            return;
+            return false;
         };
         // Ensure .xmi extension
         if path.extension().is_none_or(|ext| ext != "xmi") {
@@ -240,18 +239,22 @@ impl UmbrelloApp {
                 self.current_file_path = Some(path.clone());
                 self.is_dirty = false;
                 self.status_message = format!("Saved: {}", path.display());
+                true
             },
             Err(e) => {
-                let msg = format!("Could not save '{}':\n{}", path.display(), e);
-                rfd::MessageDialog::new()
-                    .set_title("Error Saving File")
-                    .set_description(&msg)
-                    .set_buttons(rfd::MessageButtons::Ok)
-                    .show();
-                self.status_message = format!("Error saving {}: {e}", path.display());
+                self.show_save_error(&path, e.to_string());
+                false
             },
         }
     }
-}
 
-use uml_core::UmlModel;
+    fn show_save_error(&mut self, path: &std::path::Path, error: String) {
+        let msg = format!("Could not save '{}':\n{error}", path.display());
+        rfd::MessageDialog::new()
+            .set_title("Error Saving File")
+            .set_description(&msg)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+        self.status_message = format!("Error saving {}: {error}", path.display());
+    }
+}

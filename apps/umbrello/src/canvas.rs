@@ -9,6 +9,69 @@ use crate::rendering::{
 use crate::tool_palette::ToolMode;
 use uml_core::{ArtifactDrawMode, AssociationType, Diagram, ModelElement, Point, ViewNode};
 
+#[derive(Debug, Clone)]
+pub(crate) struct ScreenEdgePath {
+    pub(crate) relationship_id: uml_core::UmlId,
+    pub(crate) points: Vec<egui::Pos2>,
+    pub(crate) kind: AssociationType,
+}
+
+pub(crate) fn point_segment_distance_sq(
+    point: egui::Pos2,
+    start: egui::Pos2,
+    end: egui::Pos2,
+) -> f32 {
+    let segment = end - start;
+    let length_sq = segment.length_sq();
+    if length_sq <= f32::EPSILON {
+        return point.distance_sq(start);
+    }
+    let t = ((point - start).dot(segment) / length_sq).clamp(0.0, 1.0);
+    point.distance_sq(start + segment * t)
+}
+
+pub(crate) fn preview_node_position(
+    original: Point,
+    screen_delta: egui::Vec2,
+    scale: f64,
+) -> Point {
+    Point::new(
+        original.x + f64::from(screen_delta.x) / scale,
+        original.y + f64::from(screen_delta.y) / scale,
+    )
+}
+
+pub(crate) fn no_diagram_guidance(has_project: bool) -> (&'static str, &'static str) {
+    if !has_project {
+        ("No XMI project is open.", "Use File > New Project or File > Open to begin.")
+    } else {
+        (
+            "No diagram exists in this project.",
+            "Use 'New Diagram…' to create a Class, Use Case, Component, or Deployment diagram.",
+        )
+    }
+}
+
+pub(crate) fn nearest_edge_relationship(
+    paths: &[ScreenEdgePath],
+    point: egui::Pos2,
+    tolerance: f32,
+) -> Option<uml_core::UmlId> {
+    let limit = tolerance * tolerance;
+    let mut nearest = None;
+    for path in paths {
+        let distance = path
+            .points
+            .windows(2)
+            .map(|segment| point_segment_distance_sq(point, segment[0], segment[1]))
+            .fold(f32::INFINITY, f32::min);
+        if distance <= limit && nearest.is_none_or(|(best, _)| distance < best) {
+            nearest = Some((distance, path.relationship_id));
+        }
+    }
+    nearest.map(|(_, relationship_id)| relationship_id)
+}
+
 impl UmbrelloApp {
     /// Render the main diagram canvas with all nodes and edges.
     pub(crate) fn render_canvas(&mut self, ui: &mut egui::Ui) {
@@ -23,16 +86,20 @@ impl UmbrelloApp {
                 ui.add_space(12.0);
                 if self.model.diagrams().is_empty() {
                     if self.model.is_empty() {
-                        ui.label("No UML model loaded. Try:");
-                        ui.label("  cargo run -- tests/data/xmi/test-COG.xmi");
+                        let (heading, detail) =
+                            no_diagram_guidance(self.current_file_path.is_some());
+                        ui.label(heading);
+                        ui.label(detail);
                     } else {
+                        let (heading, detail) =
+                            no_diagram_guidance(self.current_file_path.is_some());
                         ui.label(format!(
-                            "Model has {} elements but no diagrams.",
+                            "{} Model has {} elements but no diagrams.",
+                            heading,
                             self.model.len()
                         ));
                         ui.add_space(8.0);
-                        ui.label("→ Click 'New Class Diagram' in the left panel");
-                        ui.label("  to create a visual layout.");
+                        ui.label(format!("→ {detail}"));
                     }
                 } else {
                     ui.label("→ Select a diagram from the left panel to view it.");
@@ -180,15 +247,34 @@ impl UmbrelloApp {
                 continue;
             }
 
-            let rect = transform.model_rect_to_screen(node.bounds);
+            let display_bounds = if self.drag_node_id == Some(node.model_element_id) {
+                self.drag_preview_pos.map_or(node.bounds, |position| {
+                    uml_core::Rect::new(
+                        position.x,
+                        position.y,
+                        node.bounds.width(),
+                        node.bounds.height(),
+                    )
+                })
+            } else {
+                node.bounds
+            };
+            let rect = transform.model_rect_to_screen(display_bounds);
 
             // Draw the partitioned node
-            self.draw_partitioned_node(ui, node, rect);
+            if display_bounds == node.bounds {
+                self.draw_partitioned_node(ui, node, rect);
+            } else {
+                let mut preview_node = node.clone();
+                preview_node.bounds = display_bounds;
+                self.draw_partitioned_node(ui, &preview_node, rect);
+            }
 
             node_rects.push((node.model_element_id, rect, node.bounds.x(), node.bounds.y()));
         }
 
         // ── Handle interactions ──
+        let mut selection_handled = false;
         if self.current_tool == ToolMode::Select {
             // ── Select mode: click-to-select + drag-to-move ──
             for &(model_element_id, rect, orig_x, orig_y) in &node_rects {
@@ -200,11 +286,9 @@ impl UmbrelloApp {
                         self.drag_start_pos = Some(egui::pos2(orig_x as f32, orig_y as f32));
                     }
                     let delta = response.drag_delta();
-                    let new_pos = Point::new(
-                        orig_x + f64::from(delta.x) / transform.scale,
-                        orig_y + f64::from(delta.y) / transform.scale,
-                    );
-                    let _ = self.move_node_to(diagram_id, model_element_id, new_pos);
+                    let new_pos =
+                        preview_node_position(Point::new(orig_x, orig_y), delta, transform.scale);
+                    self.drag_preview_pos = Some(new_pos);
                 }
                 if response.clicked() {
                     let name = self
@@ -214,10 +298,55 @@ impl UmbrelloApp {
                         .unwrap_or_default();
                     let _ = self.select_element(model_element_id);
                     self.status_message = format!("Selected: {}", name);
+                    selection_handled = true;
                 }
                 if response.drag_stopped() {
+                    if self.drag_preview_pos.is_none()
+                        && self.drag_node_id == Some(model_element_id)
+                    {
+                        let delta = response.drag_delta();
+                        self.drag_preview_pos = Some(preview_node_position(
+                            Point::new(orig_x, orig_y),
+                            delta,
+                            transform.scale,
+                        ));
+                    }
+                    if let (Some(node_id), Some(position)) =
+                        (self.drag_node_id, self.drag_preview_pos)
+                    {
+                        let _ = self.move_node_to(diagram_id, node_id, position);
+                    }
                     self.drag_node_id = None;
                     self.drag_start_pos = None;
+                    self.drag_preview_pos = None;
+                }
+            }
+            if ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary))
+                && !selection_handled
+            {
+                if let Some(pointer) = ui.ctx().pointer_latest_pos() {
+                    let paths = self.screen_edge_paths(&diagram, canvas_rect.min);
+                    let valid_paths: Vec<_> = paths
+                        .into_iter()
+                        .filter(|path| {
+                            matches!(
+                                self.model.get(path.relationship_id),
+                                Some(ModelElement::Relationship(_))
+                            )
+                        })
+                        .collect();
+                    if let Some(relationship_id) =
+                        nearest_edge_relationship(&valid_paths, pointer, 6.0)
+                    {
+                        if matches!(
+                            self.model.get(relationship_id),
+                            Some(ModelElement::Relationship(_))
+                        ) {
+                            let _ = self.select_element(relationship_id);
+                            self.status_message = "Selected relationship".into();
+                            selection_handled = true;
+                        }
+                    }
                 }
             }
         } else if self.current_tool.is_edge_tool() {
@@ -307,11 +436,13 @@ impl UmbrelloApp {
         }
 
         // ── Background click to deselect (only in Select mode) ──────
-        if self.current_tool == ToolMode::Select && self.selected_element_id.is_some() {
+        if self.current_tool == ToolMode::Select
+            && self.selected_element_id.is_some()
+            && !selection_handled
+        {
             let bg_interact = ui.interact(ui.max_rect(), ui.next_auto_id(), egui::Sense::click());
             if bg_interact.clicked() {
-                self.selected_element_id = None;
-                self.name_edit_buffer.clear();
+                self.clear_selection();
                 self.status_message = "Selection cleared".into();
             }
         }
@@ -821,39 +952,71 @@ impl UmbrelloApp {
     // Edge drawing with UML arrowheads
     // ═══════════════════════════════════════════════════════════════════
 
+    pub(crate) fn screen_edge_paths(
+        &self,
+        diagram: &Diagram,
+        origin: egui::Pos2,
+    ) -> Vec<ScreenEdgePath> {
+        let Some(transform) = self.viewport_transform(origin) else {
+            return Vec::new();
+        };
+        diagram
+            .edges
+            .values()
+            .filter_map(|edge| {
+                let src = diagram.get_node(edge.source_node_id)?;
+                let tgt = diagram.get_node(edge.target_node_id)?;
+                let kind = match self.model.get(edge.relationship_id) {
+                    Some(ModelElement::Relationship(relationship)) => relationship.kind,
+                    _ => {
+                        return Some(ScreenEdgePath {
+                            relationship_id: edge.relationship_id,
+                            points: edge_path_points(src, tgt, edge, transform),
+                            kind: AssociationType::Association,
+                        })
+                    },
+                };
+                Some(ScreenEdgePath {
+                    relationship_id: edge.relationship_id,
+                    points: edge_path_points(src, tgt, edge, transform),
+                    kind,
+                })
+            })
+            .filter(|path| path.points.len() >= 2)
+            .collect()
+    }
+
     fn draw_edges(&self, diagram: &Diagram, ui: &egui::Ui) {
         let painter = ui.painter();
-        let Some(transform) = self.viewport_transform(ui.max_rect().min) else {
-            return;
-        };
-
-        for (_, edge) in &diagram.edges {
-            let src_node = diagram.get_node(edge.source_node_id);
-            let tgt_node = diagram.get_node(edge.target_node_id);
-            let (Some(src), Some(tgt)) = (src_node, tgt_node) else {
+        for path in self.screen_edge_paths(diagram, ui.max_rect().min) {
+            let [src_center, .., tgt_center] = path.points.as_slice() else {
                 continue;
             };
-
-            let src_center = transform.model_to_screen(Point::new(
-                src.bounds.x() + src.bounds.width() / 2.0,
-                src.bounds.y() + src.bounds.height() / 2.0,
-            ));
-            let tgt_center = transform.model_to_screen(Point::new(
-                tgt.bounds.x() + tgt.bounds.width() / 2.0,
-                tgt.bounds.y() + tgt.bounds.height() / 2.0,
-            ));
-
-            // Determine relationship type
-            let rel_kind = self
-                .model
-                .get(edge.relationship_id)
-                .and_then(|e| match e {
-                    ModelElement::Relationship(r) => Some(r.kind),
-                    _ => None,
-                })
-                .unwrap_or(AssociationType::Association);
-
-            let dir = tgt_center - src_center;
+            let rel_kind = path.kind;
+            let final_dir = *tgt_center - path.points[path.points.len() - 2];
+            let final_len = final_dir.length();
+            if final_len < 1.0 {
+                continue;
+            }
+            let final_unit = final_dir / final_len;
+            let final_perp = egui::vec2(-final_unit.y, final_unit.x);
+            if self.selected_element_id == Some(path.relationship_id)
+                && matches!(
+                    self.model.get(path.relationship_id),
+                    Some(ModelElement::Relationship(_))
+                )
+            {
+                for segment in path.points.windows(2) {
+                    painter.line_segment(
+                        [segment[0], segment[1]],
+                        egui::Stroke::new(
+                            5.0,
+                            egui::Color32::from_rgba_premultiplied(30, 120, 255, 100),
+                        ),
+                    );
+                }
+            }
+            let dir = *tgt_center - *src_center;
             let len = dir.length();
             if len < 1.0 {
                 continue;
@@ -863,39 +1026,81 @@ impl UmbrelloApp {
             let black = egui::Color32::BLACK;
             let gray = egui::Color32::from_gray(100);
 
-            // Arrow tip: step back from target center to touch the rectangle edge
-            let tip = tgt_center - unit * 20.0;
+            let tip = *tgt_center - final_unit * 20.0;
+            let draw_path = |stroke: egui::Stroke| {
+                for (index, segment) in path.points.windows(2).enumerate() {
+                    let end = if index + 2 == path.points.len() {
+                        tip
+                    } else {
+                        segment[1]
+                    };
+                    painter.line_segment([segment[0], end], stroke);
+                }
+            };
+            let draw_dashed_path = |stroke: egui::Stroke| {
+                for (index, segment) in path.points.windows(2).enumerate() {
+                    let end = if index + 2 == path.points.len() {
+                        tip
+                    } else {
+                        segment[1]
+                    };
+                    draw_dashed_line(painter, segment[0], end, stroke);
+                }
+            };
 
             match rel_kind {
                 AssociationType::Generalization => {
-                    painter.line_segment([src_center, tip], egui::Stroke::new(1.5, black));
-                    draw_hollow_triangle(painter, tip, unit, perp, black);
+                    draw_path(egui::Stroke::new(1.5, black));
+                    draw_hollow_triangle(painter, tip, final_unit, final_perp, black);
                 },
                 AssociationType::Realization => {
-                    draw_dashed_line(painter, src_center, tip, egui::Stroke::new(1.5, black));
-                    draw_hollow_triangle(painter, tip, unit, perp, black);
+                    draw_dashed_path(egui::Stroke::new(1.5, black));
+                    draw_hollow_triangle(painter, tip, final_unit, final_perp, black);
                 },
                 AssociationType::Aggregation => {
-                    let diamond_center = src_center;
-                    painter
-                        .line_segment([diamond_center, tgt_center], egui::Stroke::new(1.5, black));
+                    let diamond_center = *src_center;
+                    draw_path(egui::Stroke::new(1.5, black));
                     draw_hollow_diamond(painter, diamond_center, unit, perp, black);
                 },
                 AssociationType::Composition => {
-                    let diamond_center = src_center;
-                    painter
-                        .line_segment([diamond_center, tgt_center], egui::Stroke::new(1.5, black));
+                    let diamond_center = *src_center;
+                    draw_path(egui::Stroke::new(1.5, black));
                     draw_filled_diamond(painter, diamond_center, unit, perp, black);
                 },
                 AssociationType::Dependency => {
-                    draw_dashed_line(painter, src_center, tip, egui::Stroke::new(1.0, gray));
-                    draw_open_arrow(painter, tip, unit, perp, gray);
+                    draw_dashed_path(egui::Stroke::new(1.0, gray));
+                    draw_open_arrow(painter, tip, final_unit, final_perp, gray);
                 },
                 _ => {
-                    // Plain association
-                    painter.line_segment([src_center, tgt_center], egui::Stroke::new(1.0, gray));
+                    draw_path(egui::Stroke::new(1.0, gray));
                 },
             }
         }
     }
+}
+
+fn edge_path_points(
+    source: &ViewNode,
+    target: &ViewNode,
+    edge: &uml_core::ViewEdge,
+    transform: crate::app::viewport::ViewportTransform,
+) -> Vec<egui::Pos2> {
+    let source = Point::new(
+        source.bounds.x() + source.bounds.width() / 2.0,
+        source.bounds.y() + source.bounds.height() / 2.0,
+    );
+    let target = Point::new(
+        target.bounds.x() + target.bounds.width() / 2.0,
+        target.bounds.y() + target.bounds.height() / 2.0,
+    );
+    let mut points = Vec::with_capacity(edge.waypoints.len() + 2);
+    points.push(transform.model_to_screen(source));
+    points.extend(
+        edge.waypoints
+            .iter()
+            .copied()
+            .map(|point| transform.model_to_screen(point)),
+    );
+    points.push(transform.model_to_screen(target));
+    points
 }

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use uml_core::{
     commands, Actor, Artifact, ArtifactDrawMode, AssociationType, Class, Command, Component,
     Datatype, Diagram, DiagramKind, Enum, Interface, ModelElement, Node, Package, Point, Rect,
-    Size, TypeReference, UmlId, UmlModel, UseCase, Visibility,
+    Relationship, Size, TypeReference, UmlId, UmlModel, UseCase, ViewEdge, Visibility,
 };
 
 #[test]
@@ -214,7 +214,545 @@ fn make_app_with_diagram() -> UmbrelloApp {
     model.add_diagram(d);
     let mut app = UmbrelloApp::new(model, false);
     app.active_diagram = Some(0);
+    app.current_file_path = Some(PathBuf::from("/tmp/test-project.xmi"));
     app
+}
+
+#[test]
+fn new_project_failure_preserves_all_current_state() {
+    let mut app = make_app_with_class("Existing");
+    let diagram = Diagram::new("Existing Diagram", DiagramKind::Class);
+    app.model.add_diagram(diagram);
+    app.active_diagram = Some(0);
+    app.current_file_path = Some(PathBuf::from("/existing/project.xmi"));
+    app.is_dirty = true;
+    app.selected_element_id = Some(app.model.iter().next().unwrap().0);
+    app.name_edit_buffer = "draft".into();
+    app.current_tool = ToolMode::CreateClass;
+    app.status_message = "keep me".into();
+    let before_model_len = app.model.len();
+    let before_history = app.history.undo_depth();
+    let before_path = app.current_file_path.clone();
+    let before_active = app.active_diagram;
+
+    let result = app.new_project_at(PathBuf::from("/definitely/missing/project.xmi").as_path());
+    assert!(result.is_err());
+    assert_eq!(app.model.len(), before_model_len);
+    assert_eq!(app.history.undo_depth(), before_history);
+    assert_eq!(app.current_file_path, before_path);
+    assert_eq!(app.active_diagram, before_active);
+    assert!(app.is_dirty);
+    assert_eq!(app.selected_element_id, Some(app.model.iter().next().unwrap().0));
+    assert_eq!(app.name_edit_buffer, "draft");
+    assert_eq!(app.current_tool, ToolMode::CreateClass);
+    assert_eq!(app.status_message, "keep me");
+}
+
+#[test]
+fn supported_diagram_creation_is_one_history_action_and_restores_id() {
+    let mut app = UmbrelloApp::new(UmlModel::new(), false);
+    let path = std::env::temp_dir().join("test_m24_diagram_history.xmi");
+    app.new_project_at(&path).unwrap();
+    let diagram_id = app.create_supported_diagram(DiagramKind::UseCase).unwrap();
+    assert_eq!(app.model.diagrams().len(), 1);
+    assert_eq!(app.active_diagram, Some(0));
+    assert!(app.is_dirty);
+    assert_eq!(app.history.undo_depth(), 1);
+
+    app.undo_action().unwrap();
+    assert!(app.model.diagrams().is_empty());
+    assert_eq!(app.active_diagram, None);
+    app.redo_action().unwrap();
+    assert_eq!(app.model.diagrams()[0].id, diagram_id);
+    assert_eq!(app.active_diagram, Some(0));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn all_supported_diagram_kinds_have_direct_qa_targets() {
+    let mut app = UmbrelloApp::new(UmlModel::new(), false);
+    let ctx = egui::Context::default();
+    let path = std::env::temp_dir().join("test_m24_diagram_targets.xmi");
+    let before = app.qa_snapshot();
+    for target in [
+        "diagram.new",
+        "diagram.new.class",
+        "diagram.new.use_case",
+        "diagram.new.component",
+        "diagram.new.deployment",
+    ] {
+        assert!(before
+            .targets
+            .iter()
+            .any(|item| item.id == target && !item.enabled));
+    }
+    app.new_project_at(&path).unwrap();
+    let after = app.qa_snapshot();
+    for target in [
+        "diagram.new",
+        "diagram.new.class",
+        "diagram.new.use_case",
+        "diagram.new.component",
+        "diagram.new.deployment",
+    ] {
+        assert!(after
+            .targets
+            .iter()
+            .any(|item| item.id == target && item.enabled));
+    }
+    for target in [
+        "diagram.new.class",
+        "diagram.new.use_case",
+        "diagram.new.component",
+        "diagram.new.deployment",
+    ] {
+        let snapshot = app.qa_snapshot();
+        assert!(snapshot
+            .targets
+            .iter()
+            .any(|item| item.id == target && item.enabled));
+        app.qa_select(target.into()).unwrap();
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+            .unwrap();
+        assert!(app.active_diagram.is_some());
+    }
+    assert_eq!(app.model.diagrams().len(), 4);
+    assert!(app.model.diagrams().iter().all(|diagram| matches!(
+        diagram.kind,
+        DiagramKind::Class
+            | DiagramKind::UseCase
+            | DiagramKind::Component
+            | DiagramKind::Deployment
+    )));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn diagram_creation_requires_an_xmi_project_without_mutating_state() {
+    let mut app = UmbrelloApp::new(UmlModel::new(), false);
+    let before_history = app.history.undo_depth();
+    let before_revision = app.state_revision;
+    let result = app.create_supported_diagram(DiagramKind::Class);
+    assert!(result.is_err());
+    assert!(app.model.diagrams().is_empty());
+    assert_eq!(app.history.undo_depth(), before_history);
+    assert_eq!(app.state_revision, before_revision);
+    assert!(app
+        .qa_snapshot()
+        .targets
+        .iter()
+        .any(|target| target.id == "diagram.new" && !target.enabled));
+}
+
+#[test]
+fn new_diagram_default_name_tracks_kind_changes() {
+    let mut app = UmbrelloApp::new(UmlModel::new(), false);
+    let path = std::env::temp_dir().join("test_m24_diagram_kind_name.xmi");
+    app.new_project_at(&path).unwrap();
+    app.open_new_diagram_dialog();
+    assert_eq!(app.new_diagram_name, "Class_1");
+    app.set_new_diagram_kind(DiagramKind::UseCase);
+    assert_eq!(app.new_diagram_name, "UseCase_1");
+    app.set_new_diagram_kind(DiagramKind::Component);
+    assert_eq!(app.new_diagram_name, "Component_1");
+    app.set_new_diagram_kind(DiagramKind::Deployment);
+    assert_eq!(app.new_diagram_name, "Deployment_1");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn new_diagram_radio_transition_updates_name_after_field_was_already_changed() {
+    let mut app = UmbrelloApp::new(UmlModel::new(), false);
+    let path = std::env::temp_dir().join("test_m24_radio_kind_transition.xmi");
+    app.new_project_at(&path).unwrap();
+    app.open_new_diagram_dialog();
+    assert_eq!(app.new_diagram_name, "Class_1");
+
+    // Mirror egui::Ui::radio_value: the field has already been assigned when
+    // the transition handler runs.
+    let previous_kind = DiagramKind::Class;
+    app.new_diagram_kind = DiagramKind::UseCase;
+    let new_kind = app.new_diagram_kind;
+    app.apply_new_diagram_kind_transition(previous_kind, new_kind);
+    assert_eq!(app.new_diagram_name, "UseCase_1");
+
+    // A second frame with no transition must preserve a deliberately edited
+    // draft rather than regenerating it.
+    app.new_diagram_name = "Custom name".into();
+    app.apply_new_diagram_kind_transition(DiagramKind::UseCase, DiagramKind::UseCase);
+    assert_eq!(app.new_diagram_name, "Custom name");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn qa_file_new_set_text_uses_project_helper_without_dialog() {
+    let mut app = make_app_with_class("Before");
+    let ctx = egui::Context::default();
+    let path = std::env::temp_dir().join("test_m24_qa_project.xmi");
+    app.qa_select("file.new".into()).unwrap();
+    app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::SetText {
+            value: path.display().to_string(),
+        },
+        &ctx,
+    )
+    .unwrap();
+    assert!(app.model.is_empty());
+    assert_eq!(app.current_file_path, Some(path.clone()));
+    assert!(!app.is_dirty);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn project_mcp_new_rejects_dirty_state_without_touching_destination() {
+    let mut app = make_app_with_diagram();
+    let class = Class::new("DirtyClass");
+    let class_id = class.base.id;
+    app.model.insert(ModelElement::Class(class));
+    let command =
+        commands::ChangeDocumentation::new(&app.model, class_id, "changed".into()).unwrap();
+    app.execute_command(Box::new(command));
+    app.current_file_path = Some(PathBuf::from("/tmp/current-project.xmi"));
+    app.selected_element_id = Some(class_id);
+    app.name_edit_buffer = "DirtyClass".into();
+    app.current_tool = ToolMode::CreateClass;
+    app.is_dirty = true;
+
+    let before_model_len = app.model.len();
+    let before_diagram_id = app.model.diagrams()[0].id;
+    let before_history = (app.history.undo_depth(), app.history.redo_depth());
+    let before_path = app.current_file_path.clone();
+    let before_active = app.active_diagram;
+    let before_selection = app.selected_element_id;
+    let before_tool = app.current_tool;
+    let destination = std::env::temp_dir().join(format!("umbrello-dirty-{}.xmi", UmlId::new()));
+    let _ = std::fs::remove_file(&destination);
+
+    let context = egui::Context::default();
+    app.qa_select("file.new".into()).unwrap();
+    let result = app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::SetText {
+            value: destination.display().to_string(),
+        },
+        &context,
+    );
+    assert!(matches!(result, Err(crate::app::qa::protocol::QaError::InvalidValue(_))));
+    assert_eq!(app.model.len(), before_model_len);
+    assert_eq!(app.model.diagrams()[0].id, before_diagram_id);
+    assert_eq!((app.history.undo_depth(), app.history.redo_depth()), before_history);
+    assert_eq!(app.current_file_path, before_path);
+    assert_eq!(app.active_diagram, before_active);
+    assert_eq!(app.selected_element_id, before_selection);
+    assert_eq!(app.current_tool, before_tool);
+    assert!(app.is_dirty);
+    assert!(!destination.exists());
+}
+
+#[test]
+fn compatibility_policy_enumerates_every_tool_and_supported_diagram() {
+    let all_tools = [
+        ToolMode::Select,
+        ToolMode::CreateClass,
+        ToolMode::CreateInterface,
+        ToolMode::CreateEnum,
+        ToolMode::CreateDatatype,
+        ToolMode::CreatePackage,
+        ToolMode::CreateActor,
+        ToolMode::CreateUseCase,
+        ToolMode::CreateComponent,
+        ToolMode::CreateNode,
+        ToolMode::CreateArtifact,
+        ToolMode::CreateGeneralization,
+        ToolMode::CreateRealization,
+        ToolMode::CreateAssociation,
+        ToolMode::CreateAggregation,
+        ToolMode::CreateComposition,
+        ToolMode::CreateDependency,
+    ];
+    let expected = [
+        (
+            DiagramKind::Class,
+            [
+                ToolMode::Select,
+                ToolMode::CreateClass,
+                ToolMode::CreateInterface,
+                ToolMode::CreateEnum,
+                ToolMode::CreateDatatype,
+                ToolMode::CreatePackage,
+                ToolMode::CreateGeneralization,
+                ToolMode::CreateRealization,
+                ToolMode::CreateAssociation,
+                ToolMode::CreateAggregation,
+                ToolMode::CreateComposition,
+                ToolMode::CreateDependency,
+            ]
+            .as_slice(),
+        ),
+        (
+            DiagramKind::UseCase,
+            [
+                ToolMode::Select,
+                ToolMode::CreatePackage,
+                ToolMode::CreateActor,
+                ToolMode::CreateUseCase,
+                ToolMode::CreateGeneralization,
+                ToolMode::CreateAssociation,
+                ToolMode::CreateDependency,
+            ]
+            .as_slice(),
+        ),
+        (
+            DiagramKind::Component,
+            [
+                ToolMode::Select,
+                ToolMode::CreatePackage,
+                ToolMode::CreateInterface,
+                ToolMode::CreateComponent,
+                ToolMode::CreateArtifact,
+                ToolMode::CreateGeneralization,
+                ToolMode::CreateRealization,
+                ToolMode::CreateAssociation,
+                ToolMode::CreateAggregation,
+                ToolMode::CreateComposition,
+                ToolMode::CreateDependency,
+            ]
+            .as_slice(),
+        ),
+        (
+            DiagramKind::Deployment,
+            [
+                ToolMode::Select,
+                ToolMode::CreateComponent,
+                ToolMode::CreateNode,
+                ToolMode::CreateArtifact,
+                ToolMode::CreateAssociation,
+                ToolMode::CreateDependency,
+            ]
+            .as_slice(),
+        ),
+    ];
+    for (kind, compatible) in expected {
+        for tool in all_tools {
+            assert_eq!(
+                compatible.contains(&tool),
+                tool.is_compatible_with_diagram(kind),
+                "unexpected {tool:?} compatibility with {kind:?}"
+            );
+        }
+    }
+    assert!(ToolMode::Select.is_compatible_with_diagram(DiagramKind::Sequence));
+    assert!(!ToolMode::CreateClass.is_compatible_with_diagram(DiagramKind::Sequence));
+}
+
+#[test]
+fn incompatible_direct_placement_preserves_state_and_tool() {
+    let mut app = make_app_with_diagram();
+    app.current_tool = ToolMode::CreateUseCase;
+    let before_model = app.model.len();
+    let before_history = app.history.undo_depth();
+    let before_dirty = app.is_dirty;
+    let result = app.place_element(ToolMode::CreateUseCase, Point::new(10.0, 20.0));
+    assert!(result.is_err());
+    assert_eq!(app.model.len(), before_model);
+    assert_eq!(app.history.undo_depth(), before_history);
+    assert_eq!(app.is_dirty, before_dirty);
+    assert_eq!(app.current_tool, ToolMode::CreateUseCase);
+
+    app.current_tool = ToolMode::CreateRealization;
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model.get_diagram_mut(diagram_id).unwrap().kind = DiagramKind::UseCase;
+    let result = app.place_edge(UmlId::new(), UmlId::new());
+    assert!(result.is_err());
+    assert_eq!(app.model.len(), before_model);
+    assert_eq!(app.history.undo_depth(), before_history);
+    assert_eq!(app.is_dirty, before_dirty);
+}
+
+#[test]
+fn tool_selection_and_loaded_unsupported_diagram_are_guarded() {
+    let mut no_diagram = UmbrelloApp::new(UmlModel::new(), false);
+    assert!(no_diagram.choose_tool(ToolMode::CreateClass).is_err());
+    assert_eq!(no_diagram.current_tool, ToolMode::Select);
+
+    let mut unsupported = make_app_with_diagram();
+    let diagram_id = unsupported.model.diagrams()[0].id;
+    unsupported.model.get_diagram_mut(diagram_id).unwrap().kind = DiagramKind::Sequence;
+    assert!(unsupported.choose_tool(ToolMode::CreateClass).is_err());
+    assert_eq!(unsupported.current_tool, ToolMode::Select);
+    assert!(unsupported
+        .qa_snapshot()
+        .targets
+        .iter()
+        .any(|target| target.id == "tool.class" && !target.enabled));
+}
+
+#[test]
+fn browser_existing_elements_are_selectable_and_reused_once_with_history() {
+    let mut app = make_app_with_diagram();
+    app.current_file_path = Some(PathBuf::from("/tmp/project.xmi"));
+    let class = Class::new("Reusable");
+    let class_id = class.base.id;
+    app.model.insert(ModelElement::Class(class));
+    assert!(app.select_element(class_id).is_ok());
+    assert_eq!(app.selected_element_id, Some(class_id));
+    assert_eq!(app.name_edit_buffer, "Reusable");
+    assert!(app.add_element_to_active_diagram(class_id).is_ok());
+    assert!(app.model.diagrams()[0].get_node(class_id).is_some());
+    assert_eq!(app.history.undo_depth(), 1);
+    let position = app.model.diagrams()[0]
+        .get_node(class_id)
+        .unwrap()
+        .bounds
+        .origin;
+    assert!(app.add_element_to_active_diagram(class_id).is_err());
+    assert_eq!(
+        app.model.diagrams()[0]
+            .get_node(class_id)
+            .unwrap()
+            .bounds
+            .origin,
+        position
+    );
+    app.history.undo(&mut app.model).unwrap();
+    assert!(app.model.diagrams()[0].get_node(class_id).is_none());
+    app.history.redo(&mut app.model).unwrap();
+    assert!(app.model.diagrams()[0].get_node(class_id).is_some());
+}
+
+#[test]
+fn browser_reuse_rejects_incompatible_relationship_and_missing_diagram() {
+    let mut app = make_app_with_diagram();
+    app.current_file_path = Some(PathBuf::from("/tmp/project.xmi"));
+    let class = Class::new("ClassOnly");
+    let class_id = class.base.id;
+    app.model.insert(ModelElement::Class(class));
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model.get_diagram_mut(diagram_id).unwrap().kind = DiagramKind::UseCase;
+    assert!(app.add_element_to_active_diagram(class_id).is_err());
+    app.model.get_diagram_mut(diagram_id).unwrap().kind = DiagramKind::Class;
+    let actor = Actor::new("Actor");
+    let actor_id = actor.base.id;
+    app.model.insert(ModelElement::Actor(actor));
+    assert!(app.add_element_to_active_diagram(actor_id).is_err());
+
+    let source = Class::new("Source");
+    let source_id = source.base.id;
+    let target = Class::new("Target");
+    let target_id = target.base.id;
+    app.model.insert(ModelElement::Class(source));
+    app.model.insert(ModelElement::Class(target));
+    let relationship = Relationship::new_association(source_id, target_id);
+    let relationship_id = relationship.base.id;
+    app.model.insert(ModelElement::Relationship(relationship));
+    assert!(app.add_element_to_active_diagram(relationship_id).is_err());
+
+    app.active_diagram = None;
+    assert!(app.add_element_to_active_diagram(source_id).is_err());
+}
+
+#[test]
+fn browser_mcp_element_targets_select_and_report_add_action_state() {
+    let mut app = make_app_with_diagram();
+    app.current_file_path = None;
+    let class = Class::new("BrowserClass");
+    let class_id = class.base.id;
+    app.model.insert(ModelElement::Class(class));
+    let snapshot = app.qa_snapshot();
+    let element_target = format!("element:{class_id}");
+    let add_target = format!("element.add_to_diagram:{class_id}");
+    assert!(snapshot
+        .targets
+        .iter()
+        .any(|target| target.id == element_target));
+    assert!(snapshot
+        .targets
+        .iter()
+        .any(|target| target.id == add_target && !target.enabled));
+
+    app.current_file_path = Some(PathBuf::from("/tmp/project.xmi"));
+    let snapshot = app.qa_snapshot();
+    assert!(snapshot
+        .targets
+        .iter()
+        .any(|target| target.id == add_target && target.enabled));
+    let context = egui::Context::default();
+    app.qa_select(element_target).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+        .unwrap();
+    assert_eq!(app.selected_element_id, Some(class_id));
+    app.qa_select(add_target).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+        .unwrap();
+    assert!(app.model.diagrams()[0].get_node(class_id).is_some());
+}
+
+#[test]
+fn browser_loaded_incompatible_nodes_remain_visible_and_selectable() {
+    let mut model = UmlModel::new();
+    let class = Class::new("LoadedClass");
+    let class_id = class.base.id;
+    model.insert(ModelElement::Class(class));
+    let mut diagram = Diagram::new("Loaded Sequence", DiagramKind::Sequence);
+    let diagram_id = diagram.id;
+    diagram
+        .add_node(class_id, uml_core::ViewNode::new(class_id, Rect::new(10.0, 20.0, 100.0, 60.0)));
+    model.add_diagram(diagram);
+    let mut app = UmbrelloApp::new(model, true);
+    app.current_file_path = Some(PathBuf::from("/tmp/loaded.xmi"));
+    app.active_diagram = Some(0);
+    let snapshot = app.qa_snapshot();
+    assert!(snapshot
+        .targets
+        .iter()
+        .any(|target| target.id == format!("node:{class_id}") && target.enabled));
+    assert!(snapshot
+        .targets
+        .iter()
+        .any(|target| target.id == "tool.class" && !target.enabled));
+    let context = egui::Context::default();
+    app.qa_select(format!("node:{class_id}")).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+        .unwrap();
+    assert_eq!(app.selected_element_id, Some(class_id));
+    assert_eq!(app.model.get_diagram(diagram_id).unwrap().node_count(), 1);
+}
+
+#[test]
+fn browser_relationships_are_selectable_without_relationship_property_targets() {
+    let mut model = UmlModel::new();
+    let source = Class::new("Source");
+    let source_id = source.base.id;
+    let target = Class::new("Target");
+    let target_id = target.base.id;
+    model.insert(ModelElement::Class(source));
+    model.insert(ModelElement::Class(target));
+    let relationship = Relationship::new_association(source_id, target_id);
+    let relationship_id = relationship.base.id;
+    model.insert(ModelElement::Relationship(relationship));
+    let diagram = Diagram::new("Class", DiagramKind::Class);
+    model.add_diagram(diagram);
+    let mut app = UmbrelloApp::new(model, true);
+    app.current_file_path = Some(PathBuf::from("/tmp/relationships.xmi"));
+    app.active_diagram = Some(0);
+    let snapshot = app.qa_snapshot();
+    let relationship_target = snapshot
+        .targets
+        .iter()
+        .find(|target| target.id == format!("element:{relationship_id}"))
+        .expect("relationship target should be discoverable");
+    assert!(relationship_target.label.contains("Source"));
+    assert!(relationship_target.label.contains("Target"));
+    app.select_element(relationship_id).unwrap();
+    let snapshot = app.qa_snapshot();
+    assert!(!snapshot
+        .targets
+        .iter()
+        .any(|target| target.id == "property.name"));
+    assert!(!snapshot
+        .targets
+        .iter()
+        .any(|target| target.id == format!("element.add_to_diagram:{relationship_id}")
+            && target.enabled));
 }
 
 // ── Existing rendering tests ─────────────────────────────────
@@ -266,16 +804,19 @@ fn element_colors() {
 
 // ── M16 File I/O tests (T1-T7) ─────────────────────────────────
 
-/// T1: File > New clears the model.
+/// T1: New Project writes before replacing the model and establishes a path.
 #[test]
 fn file_new_clears_model() {
     let mut app = make_app_with_class("Test");
     assert_eq!(app.model.len(), 1);
     assert!(!app.is_dirty);
-    app.menu_file_new();
+    let path = std::env::temp_dir().join("test_m24_new_project.xmi");
+    app.new_project_at(&path).unwrap();
     assert_eq!(app.model.len(), 0);
     assert!(!app.is_dirty);
-    assert!(app.current_file_path.is_none());
+    assert_eq!(app.current_file_path, Some(path.clone()));
+    assert!(path.exists());
+    let _ = std::fs::remove_file(path);
 }
 
 /// T2: Dirty flag is set after executing a command.
@@ -1013,6 +1554,7 @@ fn make_app_with_two_nodes() -> UmbrelloApp {
     );
     let mut app = UmbrelloApp::new(model, false);
     app.active_diagram = Some(diagram_idx);
+    app.current_file_path = Some(PathBuf::from("/tmp/test-project.xmi"));
     app
 }
 
@@ -1296,6 +1838,8 @@ fn create_element_for_usecase() {
 #[test]
 fn place_actor_dirty_flag() {
     let mut app = make_app_with_diagram();
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model.get_diagram_mut(diagram_id).unwrap().kind = DiagramKind::UseCase;
     app.is_dirty = false;
     let result = app.place_element(ToolMode::CreateActor, Point::new(100.0, 100.0));
     assert!(result.is_ok());
@@ -1306,6 +1850,8 @@ fn place_actor_dirty_flag() {
 #[test]
 fn place_usecase_dirty_flag() {
     let mut app = make_app_with_diagram();
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model.get_diagram_mut(diagram_id).unwrap().kind = DiagramKind::UseCase;
     app.is_dirty = false;
     let result = app.place_element(ToolMode::CreateUseCase, Point::new(100.0, 100.0));
     assert!(result.is_ok());
@@ -1346,6 +1892,8 @@ fn usecase_unique_naming() {
 #[test]
 fn actor_undo_redo() {
     let mut app = make_app_with_diagram();
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model.get_diagram_mut(diagram_id).unwrap().kind = DiagramKind::UseCase;
     let result = app.place_element(ToolMode::CreateActor, Point::new(100.0, 100.0));
     assert!(result.is_ok());
     let elem_id = app
@@ -1424,6 +1972,12 @@ fn component_node_artifact_placement_is_atomic_and_restores_on_undo_redo() {
         (ToolMode::CreateArtifact, "Artifact_1"),
     ] {
         let mut app = make_app_with_diagram();
+        let diagram_id = app.model.diagrams()[0].id;
+        app.model.get_diagram_mut(diagram_id).unwrap().kind = if tool == ToolMode::CreateNode {
+            DiagramKind::Deployment
+        } else {
+            DiagramKind::Component
+        };
         let history_before = app.history.can_undo();
         app.place_element(tool, Point::new(25.0, 35.0)).unwrap();
         let id = app
@@ -1513,6 +2067,12 @@ fn qa_component_node_artifact_targets_create_atomic_nodes_and_support_generic_hi
     ];
     for &(tool_id, expected_name) in &cases {
         let mut app = make_app_with_diagram();
+        let diagram_id = app.model.diagrams()[0].id;
+        app.model.get_diagram_mut(diagram_id).unwrap().kind = if tool_id == "tool.node" {
+            DiagramKind::Deployment
+        } else {
+            DiagramKind::Component
+        };
         let context = egui::Context::default();
         let snapshot = app.qa_snapshot();
         assert!(snapshot
@@ -1593,4 +2153,262 @@ fn qa_component_node_artifact_targets_create_atomic_nodes_and_support_generic_hi
             .unwrap();
         assert_eq!(app.model.get(id).unwrap().name(), "Renamed");
     }
+}
+
+#[test]
+fn edge_selection_uses_nearest_segment_and_stable_ties() {
+    let first = UmlId::new();
+    let second = UmlId::new();
+    let paths = vec![
+        crate::canvas::ScreenEdgePath {
+            relationship_id: first,
+            points: vec![egui::pos2(0.0, 0.0), egui::pos2(100.0, 0.0)],
+            kind: AssociationType::Association,
+        },
+        crate::canvas::ScreenEdgePath {
+            relationship_id: second,
+            points: vec![egui::pos2(0.0, 10.0), egui::pos2(100.0, 10.0)],
+            kind: AssociationType::Association,
+        },
+    ];
+    assert_eq!(
+        crate::canvas::nearest_edge_relationship(&paths, egui::pos2(50.0, 4.0), 6.0),
+        Some(first)
+    );
+    assert_eq!(
+        crate::canvas::nearest_edge_relationship(&paths, egui::pos2(50.0, 5.0), 6.0),
+        Some(first)
+    );
+    let waypoint = crate::canvas::ScreenEdgePath {
+        relationship_id: second,
+        points: vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(20.0, 40.0),
+            egui::pos2(80.0, 40.0),
+        ],
+        kind: AssociationType::Association,
+    };
+    assert_eq!(
+        crate::canvas::nearest_edge_relationship(&[waypoint], egui::pos2(50.0, 41.0), 6.0),
+        Some(second)
+    );
+}
+
+#[test]
+fn relationship_mcp_draft_applies_atomically_and_roundtrips_history() {
+    let mut app = make_app_with_diagram();
+    app.current_file_path = Some(PathBuf::from("/tmp/relationship.xmi"));
+    let source = Class::new("Source");
+    let source_id = source.base.id;
+    let target = Class::new("Target");
+    let target_id = target.base.id;
+    app.model.insert(ModelElement::Class(source));
+    app.model.insert(ModelElement::Class(target));
+    let mut relationship = Relationship::new_association(source_id, target_id);
+    relationship.base.original_xmi_id = Some("legacy-rel".into());
+    let relationship_id = relationship.base.id;
+    app.model.insert(ModelElement::Relationship(relationship));
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model.get_diagram_mut(diagram_id).unwrap().add_edge(
+        uml_core::EdgeId::new(),
+        ViewEdge::new(relationship_id, source_id, target_id, uml_core::LineRouting::Direct),
+    );
+    app.select_element(relationship_id).unwrap();
+    let context = egui::Context::default();
+    let snapshot = app.qa_snapshot();
+    for id in [
+        "edge:",
+        "property.relationship.name",
+        "property.relationship.documentation",
+        "property.relationship.source_role",
+        "property.relationship.source_multiplicity",
+        "property.relationship.target_role",
+        "property.relationship.target_multiplicity",
+        "property.relationship.apply",
+        "property.relationship.revert",
+    ] {
+        if id.ends_with(':') {
+            assert!(snapshot
+                .targets
+                .iter()
+                .any(|target| target.id == format!("{id}{relationship_id}")));
+        } else {
+            assert!(snapshot.targets.iter().any(|target| target.id == id));
+        }
+    }
+    app.qa_select(format!("edge:{relationship_id}")).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+        .unwrap();
+    assert_eq!(app.selected_element_id, Some(relationship_id));
+    for (id, value) in [
+        ("property.relationship.name", "owns"),
+        ("property.relationship.documentation", "updated"),
+        ("property.relationship.source_role", "owner"),
+        ("property.relationship.source_multiplicity", " "),
+        ("property.relationship.target_role", "item"),
+        ("property.relationship.target_multiplicity", "0..*"),
+    ] {
+        app.qa_select(id.into()).unwrap();
+        app.qa_dispatch(
+            crate::app::qa::protocol::QaRequest::SetText {
+                value: value.into(),
+            },
+            &context,
+        )
+        .unwrap();
+    }
+    assert_eq!(app.model.get(relationship_id).unwrap().name(), "");
+    let undo_before = app.history.can_undo();
+    app.qa_select("property.relationship.apply".into()).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+        .unwrap();
+    assert!(undo_before || app.history.can_undo());
+    assert_eq!(app.status_message, "Relationship updated");
+    assert_eq!(app.status_message, "Relationship updated");
+    let ModelElement::Relationship(updated) = app.model.get(relationship_id).unwrap() else {
+        unreachable!()
+    };
+    assert_eq!(updated.base.name, "owns");
+    assert_eq!(updated.source_role_name, Some("owner".into()));
+    assert_eq!(updated.source_multiplicity, None);
+    assert_eq!(updated.target_multiplicity, Some("0..*".into()));
+    assert_eq!(updated.base.original_xmi_id.as_deref(), Some("legacy-rel"));
+    app.qa_select("property.relationship.apply".into()).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+        .unwrap();
+    assert_eq!(app.status_message, "Relationship unchanged (no changes)");
+    app.qa_select("property.relationship.name".into()).unwrap();
+    app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::SetText {
+            value: "draft".into(),
+        },
+        &context,
+    )
+    .unwrap();
+    app.qa_select("property.relationship.revert".into())
+        .unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+        .unwrap();
+    assert_eq!(app.status_message, "Relationship draft reverted");
+    app.undo_action().unwrap();
+    assert_eq!(app.model.get(relationship_id).unwrap().name(), "");
+    app.redo_action().unwrap();
+    assert_eq!(app.model.get(relationship_id).unwrap().name(), "owns");
+    assert_eq!(app.relationship_draft.as_ref().unwrap().1.name, "owns");
+}
+
+#[test]
+fn relationship_noop_apply_and_kind_policy_are_safe() {
+    let mut app = make_app_with_diagram();
+    app.current_file_path = Some(PathBuf::from("/tmp/relationship.xmi"));
+    let source = Class::new("Source");
+    let source_id = source.base.id;
+    let target = Class::new("Target");
+    let target_id = target.base.id;
+    app.model.insert(ModelElement::Class(source));
+    app.model.insert(ModelElement::Class(target));
+    let relationship = Relationship::new_association(source_id, target_id);
+    let relationship_id = relationship.base.id;
+    app.model.insert(ModelElement::Relationship(relationship));
+    app.select_element(relationship_id).unwrap();
+    let can_undo_before = app.history.can_undo();
+    app.apply_relationship_draft(relationship_id).unwrap();
+    assert_eq!(app.history.can_undo(), can_undo_before);
+    app.relationship_draft = None;
+    let context = egui::Context::default();
+    app.qa_select("property.relationship.apply".into()).unwrap();
+    assert!(app
+        .qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &context)
+        .is_err());
+    assert!(app.status_message.starts_with("Relationship apply failed:"));
+    app.active_diagram = None;
+    assert!(app.relationship_kind_allowed(AssociationType::Dependency));
+}
+
+#[test]
+fn classifier_flags_are_not_exposed_for_non_classifiers() {
+    let mut app = make_app_with_diagram();
+    for element in [
+        ModelElement::Actor(Actor::new("Actor")),
+        ModelElement::UseCase(UseCase::new("UseCase")),
+        ModelElement::Package(Package::new("Package")),
+    ] {
+        let id = element.id();
+        app.model.insert(element);
+        app.select_element(id).unwrap();
+        let snapshot = app.qa_snapshot();
+        assert!(!snapshot
+            .targets
+            .iter()
+            .any(|target| target.id == "property.abstract"));
+        assert!(!snapshot
+            .targets
+            .iter()
+            .any(|target| target.id == "property.static"));
+    }
+}
+
+#[test]
+fn normal_documentation_buffer_can_be_cleared_without_dropping_the_selection() {
+    let mut app = make_app_with_diagram();
+    let mut class = Class::new("Documented");
+    class.base.documentation = "old".into();
+    let id = class.base.id;
+    app.model.insert(ModelElement::Class(class));
+    app.select_element(id).unwrap();
+    assert_eq!(app.documentation_edit_buffer, "old");
+    app.documentation_edit_buffer.clear();
+    app.set_documentation(id, String::new()).unwrap();
+    assert_eq!(app.model.get(id).unwrap().base().documentation, "");
+    assert_eq!(app.selected_element_id, Some(id));
+}
+
+#[test]
+fn empty_canvas_guidance_is_project_aware_and_supported_kind_only() {
+    let (heading, detail) = crate::canvas::no_diagram_guidance(false);
+    assert!(heading.contains("No XMI project"));
+    assert!(detail.contains("New Project") && detail.contains("Open"));
+    let (heading, detail) = crate::canvas::no_diagram_guidance(true);
+    assert!(heading.contains("No diagram"));
+    assert!(detail.contains("Class") && detail.contains("Deployment"));
+}
+
+#[test]
+fn drag_preview_converts_screen_delta_once_and_move_is_one_command() {
+    let original = Point::new(10.0, 20.0);
+    let preview = crate::canvas::preview_node_position(original, egui::vec2(30.0, 20.0), 2.0);
+    assert_eq!(preview, Point::new(25.0, 30.0));
+    let mut app = make_app_with_diagram();
+    app.current_file_path = Some(PathBuf::from("/tmp/drag.xmi"));
+    let element = Class::new("Dragged");
+    let id = element.base.id;
+    app.model.insert(ModelElement::Class(element));
+    let diagram = app.model.diagrams()[0].id;
+    app.model
+        .get_diagram_mut(diagram)
+        .unwrap()
+        .add_node(id, uml_core::ViewNode::new(id, Rect::new(10.0, 20.0, 100.0, 60.0)));
+    app.move_node_to(diagram, id, preview).unwrap();
+    assert_eq!(
+        app.model
+            .get_diagram(diagram)
+            .unwrap()
+            .get_node(id)
+            .unwrap()
+            .bounds
+            .x(),
+        25.0
+    );
+    app.undo_action().unwrap();
+    assert_eq!(
+        app.model
+            .get_diagram(diagram)
+            .unwrap()
+            .get_node(id)
+            .unwrap()
+            .bounds
+            .x(),
+        10.0
+    );
+    assert!(app.history.can_redo());
 }
