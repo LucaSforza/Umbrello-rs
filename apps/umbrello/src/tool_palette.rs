@@ -186,26 +186,29 @@ impl UmbrelloApp {
     }
 
     /// Place a newly created element on the active diagram at the given position.
-    /// Executes `CreateElement` + `AddNodeToDiagram` commands.
-    /// Returns `Ok(())` if both commands succeed.
+    /// Executes one atomic model-and-view creation command.
     pub(crate) fn place_element(&mut self, tool: ToolMode, pos: Point) -> Result<(), String> {
         let diag_idx = self
             .active_diagram
             .ok_or_else(|| "No active diagram".to_string())?;
-        let diagram_id = self.model.diagrams()[diag_idx].id;
+        let diagram_id = self
+            .model
+            .diagrams()
+            .get(diag_idx)
+            .ok_or_else(|| "Active diagram is unavailable".to_string())?
+            .id;
 
         let elem = self.create_element_for_tool(tool);
-        let elem_id = elem.id();
-
-        self.execute_command(Box::new(commands::CreateElement::new(elem)));
-        self.execute_command(Box::new(commands::AddNodeToDiagram::new(
+        let command = commands::CreateElementWithNode::new(
+            &self.model,
             diagram_id,
-            elem_id,
+            elem,
             pos,
             Size::new(160.0, 60.0),
-        )));
-
-        Ok(())
+        )
+        .map_err(|error| error.to_string())?;
+        self.execute_command_result(Box::new(command))
+            .map_err(|error| error.to_string())
     }
 
     /// Place a new relationship edge between two nodes on the active diagram.
@@ -225,12 +228,13 @@ impl UmbrelloApp {
             .ok_or_else(|| "No active diagram".to_string())?;
         let diagram_id = self.model.diagrams()[diag_idx].id;
 
-        self.execute_command(Box::new(commands::CreateEdge::new(
+        self.execute_command_result(Box::new(commands::CreateEdge::new(
             diagram_id,
             source_node_id,
             target_node_id,
             kind,
-        )));
+        )))
+        .map_err(|error| error.to_string())?;
 
         Ok(())
     }
@@ -254,9 +258,7 @@ impl UmbrelloApp {
             let selected = self.current_tool == *tool;
             let button = egui::SelectableLabel::new(selected, tool.label());
             if ui.add(button).clicked() {
-                self.current_tool = *tool;
-                self.preview_position = None;
-                self.drag_source_node_id = None;
+                self.choose_tool(*tool);
                 self.status_message = format!("Tool: {}", tool.label());
             }
         }
@@ -276,9 +278,7 @@ impl UmbrelloApp {
             let selected = self.current_tool == *tool;
             let button = egui::SelectableLabel::new(selected, tool.label());
             if ui.add(button).clicked() {
-                self.current_tool = *tool;
-                self.preview_position = None;
-                self.drag_source_node_id = None;
+                self.choose_tool(*tool);
                 self.status_message = format!("Tool: {}", tool.label());
             }
         }

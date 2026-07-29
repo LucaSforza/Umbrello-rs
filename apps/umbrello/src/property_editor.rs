@@ -10,7 +10,6 @@
 
 use crate::app::UmbrelloApp;
 use crate::rendering::{type_display, visibility_name, visibility_symbol};
-use uml_core::commands;
 
 impl UmbrelloApp {
     /// Render the right-side property editor panel.
@@ -75,13 +74,11 @@ impl UmbrelloApp {
                 || response.lost_focus()
             {
                 let new_name = self.name_edit_buffer.trim().to_string();
-                if !new_name.is_empty() && new_name != current_name {
-                    if let Ok(cmd) =
-                        commands::RenameElement::new(&self.model, selected_id, new_name.clone())
-                    {
-                        self.execute_command(Box::new(cmd));
-                        self.name_edit_buffer = new_name;
-                    }
+                if !new_name.is_empty()
+                    && new_name != current_name
+                    && self.rename_element(selected_id, new_name.clone()).is_ok()
+                {
+                    self.name_edit_buffer = new_name;
                 }
             }
         });
@@ -106,11 +103,7 @@ impl UmbrelloApp {
                         if ui.selectable_label(current_vis == vis, label).clicked()
                             && vis != current_vis
                         {
-                            if let Ok(cmd) =
-                                commands::ChangeVisibility::new(&self.model, selected_id, vis)
-                            {
-                                self.execute_command(Box::new(cmd));
-                            }
+                            let _ = self.set_visibility(selected_id, vis);
                         }
                     }
                 });
@@ -125,14 +118,7 @@ impl UmbrelloApp {
             let changed_sta = ui.checkbox(&mut new_static, "Static").changed();
 
             if changed_abs || changed_sta {
-                if let Ok(cmd) = commands::ChangeElementFlags::new(
-                    &self.model,
-                    selected_id,
-                    new_abstract,
-                    new_static,
-                ) {
-                    self.execute_command(Box::new(cmd));
-                }
+                let _ = self.set_flags(selected_id, new_abstract, new_static);
             }
         });
         ui.add_space(6.0);
@@ -150,9 +136,7 @@ impl UmbrelloApp {
             && doc != doc_orig
             && (!doc.trim().is_empty() || !doc_orig.is_empty())
         {
-            if let Ok(cmd) = commands::ChangeDocumentation::new(&self.model, selected_id, doc) {
-                self.execute_command(Box::new(cmd));
-            }
+            let _ = self.set_documentation(selected_id, doc);
         }
 
         // ── Classifier Details (Read-Only) ─────────────────────────

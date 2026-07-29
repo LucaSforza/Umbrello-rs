@@ -76,6 +76,15 @@ After the contract, include relevant symbols, acceptance criteria, known edge ca
 
 Use non-overlapping file ownership for concurrent assignments. Do not delegate a subtask until its dependencies are satisfied. `Commit requested` must always be explicit and may be `yes` only when the user has requested commits. Never request an amend, force-push, or inclusion of files outside the assignment's ownership.
 
+When the user has requested commits, give implementers `Commit requested: yes` for coherent implementation subtasks whenever file ownership permits it. Prefer having the implementer who owns and understands a change create its focused commit after validation, rather than accumulating all production changes for the architect to commit at the end. Before requesting a commit, define the exact owned files that may be staged and require the implementer to inspect status, diff, and recent log. Cross-subtask integration or documentation/configuration commits may remain with the architect when no single implementer owns the complete intended file set.
+
+#### Implementation Continuity
+
+- When inspection, validation, or review finds a defect in an implemented subsystem, resume the same `@implementer` task/session that originally implemented that subsystem whenever the task tool provides its `task_id`.
+- Give the original implementer the new evidence, exact failing behavior, and a complete fix-subtask contract. It already has the most relevant implementation context and should get the first opportunity to correct its work.
+- Start a fresh implementer only when the original task cannot be resumed, ownership has materially changed, or independent replacement is explicitly justified. State that reason in the assignment.
+- This continuity rule does not weaken independent review: `@reviewer` remains separate and must validate the corrected integrated state.
+
 ### 4. Inspect Every Result
 
 After each implementer returns:
@@ -94,6 +103,8 @@ Do not accept an implementer's summary as proof. Review the integrated repositor
 `@reviewer` is a separate, independent quality gate. Delegate review after coherent batches when size, architectural reach, persistence impact, or regression risk warrants an intermediate gate. A final integrated review by `@reviewer` is mandatory for every production cycle.
 
 Every reviewer assignment must identify the plan path, gate ID, included subtask IDs, diff or commit range, files in scope, acceptance criteria, and validation evidence. Ask for a written verdict with actionable findings.
+
+For GUI automation or MCP QA infrastructure, the final reviewer must exercise the actual running Umbrello application through the implemented MCP server whenever the environment permits it. Static inspection and unit tests are not substitutes for using `ui_inspect`, selecting and activating controls, mutating visible state, synchronizing, and capturing a screenshot. If the environment prevents launching or viewing Umbrello, require the reviewer to report the exact blocker and the strongest attempted end-to-end evidence.
 
 If either your inspection or `@reviewer` finds a production defect, create a new fix subtask and send it to `@implementer` using the complete assignment contract. Never fix it silently. Re-run affected validation and repeat the review gate until blocking and major findings are resolved.
 

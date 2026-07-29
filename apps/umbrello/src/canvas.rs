@@ -7,7 +7,7 @@ use crate::rendering::{
     draw_open_arrow, element_color, type_display, visibility_symbol,
 };
 use crate::tool_palette::ToolMode;
-use uml_core::{commands, AssociationType, Diagram, ModelElement, Point, ViewNode};
+use uml_core::{AssociationType, Diagram, ModelElement, Point, ViewNode};
 
 impl UmbrelloApp {
     /// Render the main diagram canvas with all nodes and edges.
@@ -181,11 +181,7 @@ impl UmbrelloApp {
                     let delta = response.drag_delta();
                     let new_pos =
                         Point::new(orig_x + f64::from(delta.x), orig_y + f64::from(delta.y));
-                    if let Ok(cmd) =
-                        commands::MoveNode::new(&self.model, diagram_id, model_element_id, new_pos)
-                    {
-                        self.execute_command(Box::new(cmd));
-                    }
+                    let _ = self.move_node_to(diagram_id, model_element_id, new_pos);
                 }
                 if response.clicked() {
                     let name = self
@@ -193,10 +189,7 @@ impl UmbrelloApp {
                         .get(model_element_id)
                         .map(|e| e.name().to_string())
                         .unwrap_or_default();
-                    self.selected_element_id = Some(model_element_id);
-                    if let Some(elem) = self.model.get(model_element_id) {
-                        self.name_edit_buffer = elem.name().to_string();
-                    }
+                    let _ = self.select_element(model_element_id);
                     self.status_message = format!("Selected: {}", name);
                 }
                 if response.drag_stopped() {

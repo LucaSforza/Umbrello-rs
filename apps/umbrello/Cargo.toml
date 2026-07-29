@@ -20,3 +20,10 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rfd = "0.15"
+serde.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+rmcp = { version = "=3.0.0", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
+base64 = "0.22"
+tokio.workspace = true
+tokio-util = "0.7"
+serde_json.workspace = true

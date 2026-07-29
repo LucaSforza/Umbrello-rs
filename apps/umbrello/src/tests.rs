@@ -5,11 +5,12 @@
 
 // These allow are needed because the module is cfg-gated; clippy in the
 // binary target sees this code as unused.
-#![allow(unused_imports, dead_code)]
+#![allow(unused_imports)]
 
 use crate::app::UmbrelloApp;
 use crate::rendering::{element_color, type_display, visibility_symbol};
 use crate::tool_palette::ToolMode;
+use image::GenericImageView;
 use std::path::PathBuf;
 use uml_core::{
     commands, Actor, AssociationType, Class, Command, Datatype, Diagram, DiagramKind, Enum,
@@ -17,7 +18,187 @@ use uml_core::{
     Visibility,
 };
 
+#[test]
+fn qa_targets_use_durable_ids_and_command_mutations() {
+    let mut app = make_app_with_diagram();
+    let class = Class::new("Before");
+    let id = class.base.id;
+    let other = Class::new("Other");
+    let other_id = other.base.id;
+    app.model.insert(ModelElement::Class(class));
+    app.model.insert(ModelElement::Class(other));
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(id, uml_core::ViewNode::new(id, uml_core::Rect::new(10.0, 20.0, 100.0, 60.0)));
+    app.model.get_diagram_mut(diagram_id).unwrap().add_node(
+        other_id,
+        uml_core::ViewNode::new(other_id, uml_core::Rect::new(120.0, 20.0, 100.0, 60.0)),
+    );
+    let snapshot = app.qa_snapshot();
+    assert!(snapshot
+        .targets
+        .iter()
+        .any(|target| target.id == format!("node:{id}")));
+    let ctx = egui::Context::default();
+    app.qa_select(format!("node:{id}")).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+    app.qa_select("property.name".into()).unwrap();
+    app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::SetText {
+            value: "After".into(),
+        },
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(app.model.get(id).unwrap().name(), "After");
+    assert_eq!(app.name_edit_buffer, "After");
+    let empty = app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::SetText {
+            value: "   ".into(),
+        },
+        &ctx,
+    );
+    assert!(matches!(empty, Err(crate::app::qa::protocol::QaError::InvalidValue(_))));
+    assert_eq!(app.model.get(id).unwrap().name(), "After");
+    assert_eq!(app.name_edit_buffer, "After");
+    app.qa_select("history.undo".into()).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+    assert_eq!(app.model.get(id).unwrap().name(), "Before");
+    assert_eq!(app.name_edit_buffer, "Before");
+    app.qa_select("history.redo".into()).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+    assert_eq!(app.model.get(id).unwrap().name(), "After");
+    assert_eq!(app.name_edit_buffer, "After");
+    app.qa_select(format!("node:{other_id}")).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+    assert_eq!(app.name_edit_buffer, "Other");
+    assert_eq!(app.model.diagrams()[0].id, diagram_id);
+}
+
+#[test]
+fn qa_operations_require_the_automation_cursor_and_reject_stale_selection() {
+    let mut app = make_app_with_diagram();
+    let first = Class::new("First");
+    let first_id = first.base.id;
+    let second = Class::new("Second");
+    let second_id = second.base.id;
+    app.model.insert(ModelElement::Class(first));
+    app.model.insert(ModelElement::Class(second));
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model.get_diagram_mut(diagram_id).unwrap().add_node(
+        first_id,
+        uml_core::ViewNode::new(first_id, uml_core::Rect::new(0.0, 0.0, 100.0, 60.0)),
+    );
+    app.model.get_diagram_mut(diagram_id).unwrap().add_node(
+        second_id,
+        uml_core::ViewNode::new(second_id, uml_core::Rect::new(120.0, 0.0, 100.0, 60.0)),
+    );
+    let ctx = egui::Context::default();
+
+    app.qa_select(format!("node:{first_id}")).unwrap();
+    let mismatch = app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::SetText {
+            value: "must-not-apply".into(),
+        },
+        &ctx,
+    );
+    assert!(matches!(mismatch, Err(crate::app::qa::protocol::QaError::UnavailableTarget(_))));
+    assert_eq!(app.model.get(first_id).unwrap().name(), "First");
+
+    app.model.remove(first_id).unwrap();
+    let stale =
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx);
+    assert!(matches!(stale, Err(crate::app::qa::protocol::QaError::UnavailableTarget(_))));
+    assert_eq!(
+        app.qa_snapshot().selected_qa_target.as_deref(),
+        Some(format!("node:{first_id}").as_str())
+    );
+    assert!(app.model.get(second_id).is_some());
+}
+
+#[test]
+fn qa_bridge_reports_full_queue_without_blocking() {
+    let (bridge, handle) = crate::app::qa::bridge::QaBridge::new(1);
+    let first = handle.submit_timeout(
+        crate::app::qa::protocol::QaRequest::Inspect,
+        std::time::Duration::from_millis(1),
+    );
+    assert!(matches!(first, Err(crate::app::qa::protocol::QaError::Timeout)));
+    let second = handle.submit_timeout(
+        crate::app::qa::protocol::QaRequest::Inspect,
+        std::time::Duration::from_millis(1),
+    );
+    assert!(matches!(second, Err(crate::app::qa::protocol::QaError::QueueFull)));
+    drop(bridge);
+}
+
+#[test]
+fn qa_ticket_cancellation_is_visible_before_ui_processing() {
+    let (bridge, handle) = crate::app::qa::bridge::QaBridge::new(1);
+    let ticket = handle
+        .submit_ticket(
+            crate::app::qa::protocol::QaRequest::Inspect,
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap();
+    ticket.cancel();
+    let envelope = bridge.receiver.try_recv().unwrap();
+    assert!(envelope
+        .cancelled
+        .load(std::sync::atomic::Ordering::Acquire));
+    let _ = envelope
+        .reply
+        .send(Err(crate::app::qa::protocol::QaError::Cancelled));
+    assert!(matches!(ticket.wait(), Err(crate::app::qa::protocol::QaError::Cancelled)));
+}
+
+#[test]
+fn screenshot_png_decodes_with_signature_dimensions_and_metadata() {
+    let image = egui::ColorImage::new([2, 1], egui::Color32::WHITE);
+    let result = crate::app::qa::screenshot::encode_png(&image, 4, 5).unwrap();
+    assert_eq!(&result.png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!((result.width, result.height), (2, 1));
+    let decoded = image::load_from_memory(&result.png).unwrap();
+    assert_eq!(decoded.dimensions(), (2, 1));
+    assert_eq!((result.state_revision, result.rendered_revision), (4, 5));
+}
+
+#[test]
+fn qa_save_returns_error_without_opening_a_dialog() {
+    let mut app = make_app_with_class("Unsaved");
+    app.current_file_path = Some(PathBuf::from("/definitely/not/a/real/directory/model.xmi"));
+    app.is_dirty = true;
+    let error = app.save_current().expect_err("invalid path must fail");
+    assert!(error.to_string().contains("I/O error"));
+    assert!(app.is_dirty);
+}
+
+#[test]
+fn screenshot_shutdown_drains_queued_request_with_structured_error() {
+    let mut app = UmbrelloApp::new(UmlModel::new(), false);
+    let handle = app.enable_qa(2);
+    let worker = std::thread::spawn(move || {
+        handle.submit_timeout(
+            crate::app::qa::protocol::QaRequest::Screenshot,
+            std::time::Duration::from_secs(2),
+        )
+    });
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    app.shutdown_qa();
+    assert!(matches!(
+        worker.join().unwrap(),
+        Err(crate::app::qa::protocol::QaError::Shutdown)
+    ));
+}
+
 /// Helper: create an UmbrelloApp with a non-empty model.
+#[allow(dead_code)]
 fn make_app_with_class(name: &str) -> UmbrelloApp {
     let mut model = UmlModel::new();
     let cls = Class::new(name);
@@ -26,6 +207,7 @@ fn make_app_with_class(name: &str) -> UmbrelloApp {
 }
 
 /// Helper: create an UmbrelloApp with a Class diagram.
+#[allow(dead_code)]
 fn make_app_with_diagram() -> UmbrelloApp {
     let mut model = UmlModel::new();
     let d = Diagram::new("Test", DiagramKind::Class);
@@ -379,16 +561,11 @@ fn place_element_undo_removes_both() {
         .unwrap();
     assert!(app.model.get(elem_id).is_some());
 
-    // Undo AddNodeToDiagram
-    app.history.undo(&mut app.model).unwrap();
-    // Element should still exist, but node should be removed
-    assert!(app.model.get(elem_id).is_some());
-    let diag = &app.model.diagrams()[0];
-    assert!(diag.get_node(elem_id).is_none());
-
-    // Undo CreateElement
+    // One undo reverses the atomic element-and-node operation.
     app.history.undo(&mut app.model).unwrap();
     assert!(app.model.get(elem_id).is_none());
+    let diag = &app.model.diagrams()[0];
+    assert!(diag.get_node(elem_id).is_none());
 }
 
 /// T14: Select tool is not a creation tool and does not trigger element creation.
@@ -643,6 +820,7 @@ fn dirty_flag_set_on_property_change() {
 // ══════════════════════════════════════════════════════════════════
 
 /// Helper: create an UmbrelloApp with a Class diagram containing two nodes.
+#[allow(dead_code)]
 fn make_app_with_two_nodes() -> UmbrelloApp {
     let mut model = UmlModel::new();
     let cls_a = Class::new("ClassA");
@@ -1007,16 +1185,11 @@ fn actor_undo_redo() {
         .unwrap();
     assert!(app.model.get(elem_id).is_some());
 
-    // Undo AddNodeToDiagram
-    app.history.undo(&mut app.model).unwrap();
-    // Element should still exist, but node should be removed
-    assert!(app.model.get(elem_id).is_some());
-    let diag = &app.model.diagrams()[0];
-    assert!(diag.get_node(elem_id).is_none());
-
-    // Undo CreateElement
+    // One undo reverses the atomic element-and-node operation.
     app.history.undo(&mut app.model).unwrap();
     assert!(app.model.get(elem_id).is_none());
+    let diag = &app.model.diagrams()[0];
+    assert!(diag.get_node(elem_id).is_none());
 }
 
 /// APP-39: element_color for Actor returns light orange/salmon.

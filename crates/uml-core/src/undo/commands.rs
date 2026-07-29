@@ -416,6 +416,112 @@ impl Command for ChangeDocumentation {
 
 use crate::diagram::{DiagramId, EdgeId, LineRouting, Point, Rect, Size, ViewEdge, ViewNode};
 
+/// Atomically create a model element and its visual node in a diagram.
+///
+/// The constructor validates the diagram and IDs before the command is added
+/// to history. The command then performs both insertions as one operation, so
+/// a failed execution cannot leave a model element without its node.
+#[derive(Debug)]
+pub struct CreateElementWithNode {
+    diagram_id: DiagramId,
+    element_id: UmlId,
+    element: Option<ModelElement>,
+    position: Point,
+    size: Size,
+    description: String,
+}
+
+impl CreateElementWithNode {
+    /// Create a command for inserting `element` and a node at `position`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the diagram is missing, the element ID already
+    /// exists, or the diagram already contains a node for that ID.
+    pub fn new(
+        model: &UmlModel,
+        diagram_id: DiagramId,
+        element: ModelElement,
+        position: Point,
+        size: Size,
+    ) -> Result<Self, CommandError> {
+        let element_id = element.id();
+        let diagram = model
+            .get_diagram(diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        if model.contains(element_id) {
+            return Err(CommandError::InvalidOperation("element ID already exists".into()));
+        }
+        if diagram.get_node(element_id).is_some() {
+            return Err(CommandError::InvalidOperation(
+                "diagram already contains a node for element".into(),
+            ));
+        }
+        let description = format!("Create {} with node", element.object_type().as_str());
+        Ok(Self {
+            diagram_id,
+            element_id,
+            element: Some(element),
+            position,
+            size,
+            description,
+        })
+    }
+}
+
+impl Command for CreateElementWithNode {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        if model.contains(self.element_id) {
+            return Err(CommandError::InvalidOperation("element ID already exists".into()));
+        }
+        let element = self.element.take().ok_or_else(|| {
+            CommandError::InvalidOperation("CreateElementWithNode already executed".into())
+        })?;
+        let diagram = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        if diagram.get_node(self.element_id).is_some() {
+            self.element = Some(element);
+            return Err(CommandError::InvalidOperation(
+                "diagram already contains a node for element".into(),
+            ));
+        }
+        model.insert(element);
+        let Some(diagram) = model.get_diagram_mut(self.diagram_id) else {
+            // Keep this rollback even though the precondition check above
+            // makes the branch unreachable for the current model API.
+            self.element = model.remove(self.element_id);
+            return Err(CommandError::InvalidOperation("diagram not found".into()));
+        };
+        diagram.add_node(
+            self.element_id,
+            ViewNode::new(
+                self.element_id,
+                Rect::new(self.position.x, self.position.y, self.size.width, self.size.height),
+            ),
+        );
+        Ok(())
+    }
+
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        let diagram = model
+            .get_diagram_mut(self.diagram_id)
+            .ok_or_else(|| CommandError::InvalidOperation("diagram not found".into()))?;
+        if diagram.remove_node(self.element_id).is_none() {
+            return Err(CommandError::ElementNotFound(self.element_id));
+        }
+        self.element = model.remove(self.element_id);
+        if self.element.is_none() {
+            return Err(CommandError::ElementNotFound(self.element_id));
+        }
+        Ok(())
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
 /// Command to add a node to a diagram.
 #[derive(Debug)]
 pub struct AddNodeToDiagram {
@@ -800,6 +906,51 @@ mod tests {
         let cmd = CreateElement::new(ModelElement::Class(Class::new("Person")));
         assert!(cmd.description().contains("Person"));
         assert!(cmd.description().contains("Create"));
+    }
+
+    #[test]
+    fn create_element_with_node_is_atomic_across_undo_redo() {
+        let mut model = UmlModel::new();
+        let diagram = Diagram::new("Main", DiagramKind::Class);
+        let diagram_id = diagram.id;
+        model.add_diagram(diagram);
+        let element = ModelElement::Class(Class::new("Placed"));
+        let element_id = element.id();
+        let command = CreateElementWithNode::new(
+            &model,
+            diagram_id,
+            element,
+            Point::new(10.0, 20.0),
+            Size::new(160.0, 60.0),
+        )
+        .unwrap();
+        let mut history = crate::undo::History::new(10);
+        history.execute(Box::new(command), &mut model).unwrap();
+        assert!(model.contains(element_id));
+        assert!(model.diagrams()[0].get_node(element_id).is_some());
+        history.undo(&mut model).unwrap();
+        assert!(!model.contains(element_id));
+        assert!(model.diagrams()[0].get_node(element_id).is_none());
+        history.redo(&mut model).unwrap();
+        assert!(model.contains(element_id));
+        assert!(model.diagrams()[0].get_node(element_id).is_some());
+    }
+
+    #[test]
+    fn create_element_with_node_rejects_invalid_diagram_without_mutation() {
+        let model = UmlModel::new();
+        let element = ModelElement::Class(Class::new("Unplaced"));
+        let element_id = element.id();
+        let result = CreateElementWithNode::new(
+            &model,
+            crate::diagram::DiagramId::new(),
+            element,
+            Point::new(0.0, 0.0),
+            Size::new(160.0, 60.0),
+        );
+        assert!(result.is_err());
+        assert!(!model.contains(element_id));
+        assert!(model.diagrams().is_empty());
     }
 
     #[test]

@@ -54,7 +54,7 @@ impl UmbrelloApp {
                             .input(|i| i.key_pressed(egui::Key::Z) && i.modifiers.ctrl))
                     {
                         if self.history.can_undo() {
-                            self.history.undo(&mut self.model).unwrap();
+                            let _ = self.undo_action();
                             self.is_dirty = true;
                             self.status_message = "Undo".into();
                         }
@@ -66,7 +66,7 @@ impl UmbrelloApp {
                             .input(|i| i.key_pressed(egui::Key::Y) && i.modifiers.ctrl))
                     {
                         if self.history.can_redo() {
-                            self.history.redo(&mut self.model).unwrap();
+                            let _ = self.redo_action();
                             self.is_dirty = true;
                             self.status_message = "Redo".into();
                         }
@@ -77,7 +77,7 @@ impl UmbrelloApp {
                     .add_enabled(self.history.can_undo(), egui::Button::new("↩ Undo"))
                     .clicked()
                 {
-                    self.history.undo(&mut self.model).unwrap();
+                    let _ = self.undo_action();
                     self.is_dirty = true;
                     self.status_message = "Undo".into();
                 }
@@ -85,7 +85,7 @@ impl UmbrelloApp {
                     .add_enabled(self.history.can_redo(), egui::Button::new("↪ Redo"))
                     .clicked()
                 {
-                    self.history.redo(&mut self.model).unwrap();
+                    let _ = self.redo_action();
                     self.is_dirty = true;
                     self.status_message = "Redo".into();
                 }
@@ -150,24 +150,37 @@ impl UmbrelloApp {
 
     /// File > Save: save to current file path, or delegate to Save As if none.
     pub(crate) fn menu_file_save(&mut self) {
-        match &self.current_file_path {
-            Some(path) => match uml_io::xmi::save_xmi_to_file(&self.model, path) {
-                Ok(_) => {
-                    self.is_dirty = false;
-                    self.status_message = format!("Saved: {}", path.display());
-                },
-                Err(e) => {
-                    let msg = format!("Could not save '{}':\n{}", path.display(), e);
-                    rfd::MessageDialog::new()
-                        .set_title("Error Saving File")
-                        .set_description(&msg)
-                        .set_buttons(rfd::MessageButtons::Ok)
-                        .show();
-                    self.status_message = format!("Error saving {}: {e}", path.display());
-                },
-            },
-            None => self.menu_file_save_as(),
+        if self.current_file_path.is_none() {
+            self.menu_file_save_as();
+            return;
         }
+        if let Err(error) = self.save_current() {
+            let path = self
+                .current_file_path
+                .as_ref()
+                .map_or_else(|| "<none>".into(), |p| p.display().to_string());
+            let msg = format!("Could not save '{path}':\n{error}");
+            rfd::MessageDialog::new()
+                .set_title("Error Saving File")
+                .set_description(&msg)
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+            self.status_message = format!("Error saving {path}: {error}");
+        }
+    }
+
+    /// Save to the current path without opening a dialog.
+    pub(crate) fn save_current(&mut self) -> Result<(), uml_io::xmi::XmiWriteError> {
+        let path = self.current_file_path.as_ref().ok_or_else(|| {
+            uml_io::xmi::XmiWriteError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "no current file path",
+            ))
+        })?;
+        uml_io::xmi::save_xmi_to_file(&self.model, path)?;
+        self.is_dirty = false;
+        self.status_message = format!("Saved: {}", path.display());
+        Ok(())
     }
 
     /// File > Save As: prompt for a path and save.

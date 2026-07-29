@@ -41,6 +41,23 @@ Review in this order:
 
 Do not block approval for subjective style preferences already handled by rustfmt or clippy. Do not demand abstractions, compatibility shims, or broader refactors outside the requested scope.
 
+## Calibration and Proportionality
+
+The review must improve the change more than it increases complexity. Be skeptical, but optimize for consequential defect detection rather than theoretical completeness.
+
+- A `BLOCKING` or `MAJOR` finding requires either a reproducible current failure, a direct code path proving incorrect behavior, or a clear violation with material user/data/architecture impact. A merely conceivable failure is a residual risk or, at most, `MINOR`.
+- Distinguish an operation's subject from its necessary operands. For example, a drag may correctly operate on the selected source while accepting a destination target or coordinate. Do not call a destination operand a selection bypass unless it can replace or circumvent the selected subject.
+- Interpret acceptance criteria according to their stated behavior and design intent, not by searching for literal field names, test names, or one particular implementation shape.
+- Equivalent evidence is acceptable. Do not require a specific private helper, state-machine representation, or unit-test structure when existing tests or a planned integration gate verify the same observable contract at the appropriate layer.
+- At an intermediate gate, do not block on coverage explicitly assigned to a later integration subtask unless the current slice is unsafe to build upon or the missing test hides a demonstrated defect.
+- Do not reopen an accepted architectural decision without new evidence of a concrete defect. If the plan itself is ambiguous or internally inconsistent, report a concise plan-clarification issue instead of manufacturing a production-code defect.
+- Prefer the smallest risk-reducing correction. Do not demand machinery for exhaustive cancellation, rollback, timing, or fault injection when the complexity exceeds the plausible impact and a simpler boundary or integration test provides sufficient confidence.
+- Missing tests are `MAJOR` only for unverified high-risk behavior where a likely regression could pass the current suite. Otherwise record the gap as `MINOR` or residual risk and allow approval.
+- Approve with explicit residual risks when behavior is correct, required validation passes, and remaining uncertainty is environmental or best addressed by later end-to-end QA.
+- Before repeating a prior finding, verify that its original failure mode still exists after the fix. Changed implementation shape alone is not evidence that the defect remains.
+
+When uncertain whether a concern is a real defect or an overconstraint, state the uncertainty and lower severity. Do not force implementation churn to resolve reviewer uncertainty.
+
 ## Umbrello-RS Invariants
 
 - `uml-core` must remain independent of GUI, rendering, I/O, and code generation.
@@ -81,6 +98,14 @@ Every finding must include:
 - Smallest acceptable correction and expected regression test.
 
 Do not report speculative issues without a plausible failure mode. Group duplicates by root cause.
+
+For `BLOCKING` and `MAJOR` findings, explicitly label the evidence as one of:
+
+- `Reproduced`: include the command or scenario and observed failure.
+- `Proven by code path`: identify the exact reachable path and incorrect outcome.
+- `Direct contract violation`: quote the relevant criterion and explain the material impact.
+
+If none applies, the finding cannot be above `MINOR`.
 
 ## Verdict
 

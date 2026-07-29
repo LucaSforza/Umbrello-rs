@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 312 tests passing across 5 crates. The core domain model covers 8 UML element types (20 milestones). The GUI application (egui/eframe) renders partitioned class boxes and semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, provides a tool palette for interactive element creation (click-to-place nodes for 7 element types, click-drag for 6 relationship types), and features a property editor panel. The latest milestone (M20) added Actor and UseCase element types with stick-figure/ellipse rendering and full XMI round-trip support for real-world Use Case diagrams.
+**Current state:** 323 tests passing across 5 crates. The core domain model covers 8 UML element types. The GUI application (egui/eframe) renders partitioned class boxes and semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, provides a tool palette for interactive element creation (click-to-place nodes for 7 element types, click-drag for 6 relationship types), and features a property editor panel. An opt-in Rust/rmcp stdio server now supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots.
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -37,7 +37,7 @@ Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/u
 ```
 rust-rewrite/
 ├── Cargo.toml                       # Workspace root (5 members, resolver = "2")
-├── rust-toolchain.toml              # Rust 1.85+ (stable, rustfmt + clippy)
+├── rust-toolchain.toml              # Rust 1.88+ (stable, rustfmt + clippy)
 ├── rustfmt.toml                     # Formatting config
 ├── deny.toml                        # cargo-deny dependency audit
 ├── .github/                         # CI workflows
@@ -61,7 +61,7 @@ rust-rewrite/
 │   │       │   └── geometry.rs      # Point, Size, Rect
 │   │       ├── undo/
 │   │       │   ├── mod.rs           # Command trait, History (bounded stack)
-│   │       │   └── commands.rs      # 8 concrete commands (Create, Delete, Rename, Move, AddNode, RemoveNode, MoveNode, ResizeNode)
+│   │       │   └── commands.rs      # Concrete semantic/diagram commands, including atomic element+node creation
 │   │       ├── layout/
 │   │       │   └── mod.rs           # STUB — auto-layout not implemented
 │   │       ├── render/
@@ -92,8 +92,9 @@ rust-rewrite/
 ├── apps/
 │   └── umbrello/                    # GUI application
 │       └── src/
-│           ├── main.rs              # Entry point (eframe)
-│           └── app.rs               # UmbrelloApp — menus, canvas, rich rendering
+│           ├── main.rs              # Entry point; normal GUI and opt-in --mcp-stdio lifecycle
+│           ├── app.rs               # UmbrelloApp — menus, canvas, rich rendering, QA frame pump
+│           └── qa/                  # Semantic targets, bounded UI bridge, PNG screenshots, rmcp adapter
 │
 ├── xtask/                           # Dev task runner
 │   └── src/
@@ -134,21 +135,20 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 312 tests, all passing** (as of Milestone 20).
+**Total: 323 tests, all passing** (verified 2026-07-29).
 
 ### By Crate
 
 | Test Suite | Count | What It Covers |
 |------------|-------|-----------------|
-| `uml-core` unit tests | 153 | `elements.rs` (element creation, serde, relationships, TypeReference, Actor, UseCase), `repository.rs` (insert/remove, parent_index, cycle detection, validation, cascading cleanup), `types.rs` (enum properties, serde round-trips, uniqueness), `diagram/mod.rs` (Diagram CRUD, DiagramKind round-trip), `undo/commands.rs` (CreateEdge command) |
+| `uml-core` unit tests | 160 | Elements, repository invariants, types, diagrams, undo commands, and atomic `CreateElementWithNode` execute/undo/redo |
 | `uml-core` id_tests | 8 | `id.rs` — UmlId generation, equality, ordering, Display, serde, UUIDv4 properties |
-| `uml-core` serde_roundtrip | 6 | External serde round-trip tests for element types |
+| `uml-core` serde_roundtrip | 8 | External serde round-trip tests, including Actor and UseCase |
 | `uml-core` diagram_geometry | 2 | `diagram/geometry.rs` — Point, Size, Rect construction and arithmetic |
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
-| `uml-core` actor_usecase | 9 | `elements.rs` — Actor and UseCase struct creation, NamedElement impl, ModelElement dispatch, serde round-trip, XMI round-trip, non-classifier property checks |
-| `uml-io` XMI tests | 61 | `reader.rs` — parsing of Package, Class, Interface, Enum, Datatype, Actor, UseCase, attributes, operations, parameters, Generalization, Association, Dependency, Abstraction/Realization; `writer.rs` — writing back to XMI; `xmi/mod.rs` — `save_xmi_to_file` / `load_xmi_from_file` convenience functions |
-| `uml-io` real corpus | 1 | Load `../test/test-COG.xmi` (a real Umbrello file), verify 18 diagrams, 70+ nodes, 57+ edges |
-| `apps/umbrello` tests | 73 | `tests.rs` — visibility symbols, type display, element colors, dirty-flag tracking, file I/O (New/Open/Save round-trip), tool palette, element creation, edge creation, smart naming, selection tracking, property editor commands, Actor/UseCase element creation |
+| `uml-io` XMI unit tests | 59 | Reader/writer parsing, semantic round trips, diagrams, Actor/UseCase, relationships, and file helpers |
+| `uml-io` real corpus | 1 | Parse the available C++ XMI corpus without failure |
+| `apps/umbrello` tests | 80 | Existing GUI behavior plus semantic QA targets, bounded/cancellable bridge, MCP router schemas, PNG output, atomic placement, and property synchronization |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
 
 ### Test Commands
@@ -333,6 +333,18 @@ cargo test -p uml-core serde_roundtrip_model_element
 - Widget type detection in XMI extension already handled actorwidget/usecasewidget (no changes needed)
 - Zero changes to `uml-codegen`
 
+### M21 — MCP GUI Automation & Visual QA
+- **323 tests** verified across the workspace
+- Opt-in `--mcp-stdio` mode implemented in Rust with pinned `rmcp 3.0.0`; normal GUI startup remains unchanged
+- Seven generic tools: `ui_inspect`, `ui_select`, `ui_click`, `ui_set_text`, `ui_drag`, `ui_sync`, and `ui_screenshot`
+- Semantic target IDs cover tools, diagrams, canvas nodes, history actions, and editable properties without one tool per Umbrello feature
+- Bounded/cancellable bridge keeps `UmbrelloApp` and `UmlModel` on the eframe UI thread; Tokio/rmcp run on a background thread
+- Screenshot requests use egui viewport screenshot events, correlation IDs, rendered revisions, in-memory PNG encoding, and MCP image content
+- `CreateElementWithNode` makes user placement one atomic history entry across semantic element and diagram node creation
+- Runtime QA verified actual MCP initialization, all seven tools, diagram/node selection, rename, drag, sync, screenshot, undo, protocol-only stdout, and stdin-EOF shutdown
+- MCP-triggered rename synchronizes the visible property edit buffer with model/tree state and undo/redo
+- Workspace minimum Rust version is 1.88, required by rmcp 3.0.0
+
 ---
 
 ## Architecture Decisions
@@ -351,6 +363,7 @@ cargo test -p uml-core serde_roundtrip_model_element
 | **All mutations via Commands** | `History::execute()` for every user-initiated mutation; direct mutation only during XMI loading (with history disabled) |
 | **Core domain is pure** | `uml-core` has no GUI dependencies, no I/O — rendering, persistence, and code generation are separate crates |
 | **thiserror for errors** | Structured error types (`ModelError`, `CommandError`, `XmiParseError`) with `Display` + `Error` impls |
+| **In-process semantic MCP QA** | MCP operates stable UI targets through a bounded UI-thread bridge; no OS-global mouse injection or model access from async server threads |
 
 ---
 
@@ -426,6 +439,8 @@ enum ModelElement {
     Interface(Interface),
     Enum(Enum),
     Datatype(Datatype),
+    Actor(Actor),
+    UseCase(UseCase),
     Relationship(Relationship),
 }
 
@@ -507,9 +522,9 @@ History {
 }
 // Methods: execute, undo, redo, can_undo, can_redo, set_disabled, clear
 
-// Commands: CreateElement, DeleteElement, RenameElement, MoveElement,
-//           AddNodeToDiagram, RemoveNodeFromDiagram, MoveNode, ResizeNode,
-//           CreateEdge
+// Commands include: CreateElement, CreateElementWithNode, DeleteElement,
+// RenameElement, MoveElement, AddNodeToDiagram, RemoveNodeFromDiagram,
+// MoveNode, ResizeNode, CreateEdge, and property-change commands.
 ```
 
 ---
@@ -780,6 +795,9 @@ cargo run -p umbrello
 
 # Launch with any supported XMI file
 cargo run -p umbrello -- path/to/your/model.xmi
+
+# Launch the opt-in stdio MCP server together with the native GUI
+cargo run -p umbrello -- --mcp-stdio path/to/your/model.xmi
 ```
 
 ### Common Issues
@@ -930,4 +948,4 @@ Key architecture documents in `docs/` to read before implementing:
 
 ---
 
-*Last updated: 2026-06-26 · Umbrello-RS Milestone 20*
+*Last updated: 2026-07-29 · Umbrello-RS Milestone 21*
