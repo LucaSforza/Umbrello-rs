@@ -7,7 +7,7 @@ use crate::rendering::{
     draw_open_arrow, element_color, type_display, visibility_symbol,
 };
 use crate::tool_palette::ToolMode;
-use uml_core::{AssociationType, Diagram, ModelElement, Point, ViewNode};
+use uml_core::{ArtifactDrawMode, AssociationType, Diagram, ModelElement, Point, ViewNode};
 
 impl UmbrelloApp {
     /// Render the main diagram canvas with all nodes and edges.
@@ -342,7 +342,12 @@ impl UmbrelloApp {
     // Partitioned node drawing
     // ═══════════════════════════════════════════════════════════════════
 
-    fn draw_partitioned_node(&self, ui: &egui::Ui, node: &ViewNode, full_rect: egui::Rect) {
+    pub(crate) fn draw_partitioned_node(
+        &self,
+        ui: &egui::Ui,
+        node: &ViewNode,
+        full_rect: egui::Rect,
+    ) {
         let painter = ui.painter();
         let font_id = egui::FontId::proportional(12.0);
         let name_font = egui::FontId::proportional(13.0);
@@ -635,6 +640,157 @@ impl UmbrelloApp {
                     egui::Align2::CENTER_CENTER,
                     &uc.base.name,
                     name_font.clone(),
+                    egui::Color32::BLACK,
+                );
+            },
+            Some(ModelElement::Component(component)) => {
+                let stroke_width = if component.executable { 3.0 } else { 1.5 };
+                let stroke = egui::Stroke::new(stroke_width, egui::Color32::BLACK);
+                painter.rect_stroke(full_rect, 0.0, stroke, egui::StrokeKind::Inside);
+
+                // UML 2 component glyph: two small tabs in the upper-right corner.
+                let glyph_width = (full_rect.width() * 0.18).clamp(10.0, 24.0);
+                let glyph_height = (full_rect.height() * 0.32).clamp(10.0, 18.0);
+                let glyph = egui::Rect::from_min_size(
+                    egui::pos2(
+                        (full_rect.right() - glyph_width - 5.0).max(full_rect.left()),
+                        (full_rect.top() + 4.0).min(full_rect.bottom()),
+                    ),
+                    egui::vec2(glyph_width, glyph_height),
+                );
+                painter.rect_stroke(glyph, 0.0, stroke, egui::StrokeKind::Inside);
+                let tab_width = (glyph_width * 0.35).max(3.0);
+                for offset in [0.25_f32, 0.55] {
+                    let y = glyph.top() + glyph.height() * offset;
+                    painter.line_segment(
+                        [
+                            egui::pos2(glyph.left() - tab_width, y),
+                            egui::pos2(glyph.left(), y),
+                        ],
+                        stroke,
+                    );
+                }
+                painter.text(
+                    egui::pos2(full_rect.center().x, full_rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    &component.base.name,
+                    name_font.clone(),
+                    egui::Color32::BLACK,
+                );
+            },
+            Some(ModelElement::Node(node)) => {
+                // Keep the pseudo-3D depth bounded for tiny or transformed nodes.
+                let depth = (full_rect.width().min(full_rect.height()) / 3.0).clamp(0.0, 12.0);
+                let front = full_rect.shrink2(egui::vec2(depth, depth));
+                let top = egui::Rect::from_min_max(
+                    egui::pos2(full_rect.left(), full_rect.top()),
+                    egui::pos2(front.right(), front.top()),
+                );
+                let side = egui::Rect::from_min_max(
+                    egui::pos2(front.right(), full_rect.top()),
+                    egui::pos2(full_rect.right(), front.bottom()),
+                );
+                if depth > 0.0 {
+                    painter.rect_filled(top, 0.0, fill.gamma_multiply(0.85));
+                    painter.rect_filled(side, 0.0, fill.gamma_multiply(0.7));
+                    painter.line_segment(
+                        [full_rect.left_top(), front.left_top()],
+                        egui::Stroke::new(1.0, egui::Color32::BLACK),
+                    );
+                    painter.line_segment(
+                        [front.right_top(), full_rect.right_top()],
+                        egui::Stroke::new(1.0, egui::Color32::BLACK),
+                    );
+                    painter.line_segment(
+                        [front.right_bottom(), full_rect.right_bottom()],
+                        egui::Stroke::new(1.0, egui::Color32::BLACK),
+                    );
+                }
+                painter.rect_stroke(
+                    front,
+                    0.0,
+                    egui::Stroke::new(1.5, egui::Color32::BLACK),
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    front.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &node.base.name,
+                    name_font.clone(),
+                    egui::Color32::BLACK,
+                );
+            },
+            Some(ModelElement::Artifact(artifact)) => {
+                let stroke = egui::Stroke::new(1.5, egui::Color32::BLACK);
+                let inset_amount =
+                    (full_rect.width().min(full_rect.height()) / 4.0).clamp(0.0, 3.0);
+                let inset = full_rect.shrink(inset_amount);
+                match artifact.draw_as {
+                    ArtifactDrawMode::Default => {
+                        painter.rect_stroke(inset, 0.0, stroke, egui::StrokeKind::Inside);
+                    },
+                    ArtifactDrawMode::File => {
+                        painter.rect_stroke(inset, 0.0, stroke, egui::StrokeKind::Inside);
+                        let fold = (inset.width().min(inset.height()) * 0.2).clamp(6.0, 16.0);
+                        painter.line_segment(
+                            [
+                                egui::pos2(inset.right() - fold, inset.top()),
+                                egui::pos2(inset.right() - fold, inset.top() + fold),
+                            ],
+                            stroke,
+                        );
+                        painter.line_segment(
+                            [
+                                egui::pos2(inset.right() - fold, inset.top() + fold),
+                                egui::pos2(inset.right(), inset.top() + fold),
+                            ],
+                            stroke,
+                        );
+                    },
+                    ArtifactDrawMode::Library => {
+                        painter.rect_stroke(inset, 2.0, stroke, egui::StrokeKind::Inside);
+                        let shelf_y = inset.center().y;
+                        painter.line_segment(
+                            [
+                                egui::pos2(inset.left() + 5.0, shelf_y),
+                                egui::pos2(inset.right() - 5.0, shelf_y),
+                            ],
+                            stroke,
+                        );
+                        painter.line_segment(
+                            [
+                                egui::pos2(inset.left() + 5.0, shelf_y - 8.0),
+                                egui::pos2(inset.left() + 5.0, shelf_y + 8.0),
+                            ],
+                            stroke,
+                        );
+                        painter.line_segment(
+                            [
+                                egui::pos2(inset.right() - 5.0, shelf_y - 8.0),
+                                egui::pos2(inset.right() - 5.0, shelf_y + 8.0),
+                            ],
+                            stroke,
+                        );
+                    },
+                    ArtifactDrawMode::Table => {
+                        painter.rect_stroke(inset, 0.0, stroke, egui::StrokeKind::Inside);
+                        let x = inset.left() + inset.width() / 3.0;
+                        let y = inset.top() + inset.height() / 2.0;
+                        painter.line_segment(
+                            [egui::pos2(x, inset.top()), egui::pos2(x, inset.bottom())],
+                            stroke,
+                        );
+                        painter.line_segment(
+                            [egui::pos2(inset.left(), y), egui::pos2(inset.right(), y)],
+                            stroke,
+                        );
+                    },
+                }
+                painter.text(
+                    inset.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &artifact.base.name,
+                    name_font,
                     egui::Color32::BLACK,
                 );
             },

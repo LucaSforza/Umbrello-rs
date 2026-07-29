@@ -13,9 +13,9 @@ use crate::tool_palette::ToolMode;
 use image::GenericImageView;
 use std::path::PathBuf;
 use uml_core::{
-    commands, Actor, AssociationType, Class, Command, Datatype, Diagram, DiagramKind, Enum,
-    Interface, ModelElement, Package, Point, Rect, Size, TypeReference, UmlId, UmlModel, UseCase,
-    Visibility,
+    commands, Actor, Artifact, ArtifactDrawMode, AssociationType, Class, Command, Component,
+    Datatype, Diagram, DiagramKind, Enum, Interface, ModelElement, Node, Package, Point, Rect,
+    Size, TypeReference, UmlId, UmlModel, UseCase, Visibility,
 };
 
 #[test]
@@ -1375,4 +1375,131 @@ fn actor_color() {
 fn usecase_color() {
     let uc = ModelElement::UseCase(UseCase::new("Test"));
     assert_eq!(element_color(Some(&uc)), egui::Color32::from_rgb(255, 180, 180));
+}
+
+// ══════════════════════════════════════════════════════════════════
+// M23 — Component, Node, and Artifact native tools/rendering
+// ══════════════════════════════════════════════════════════════════
+
+#[test]
+fn component_node_artifact_tools_are_creation_tools_with_distinct_labels() {
+    let tools = [
+        ToolMode::CreateComponent,
+        ToolMode::CreateNode,
+        ToolMode::CreateArtifact,
+    ];
+    let labels: std::collections::HashSet<_> = tools.iter().map(ToolMode::label).collect();
+    assert_eq!(labels.len(), tools.len());
+    for tool in tools {
+        assert!(tool.is_creation_tool());
+        assert!(!tool.is_edge_tool());
+        assert!(!tool.tooltip().is_empty());
+    }
+}
+
+#[test]
+fn component_node_artifact_tools_construct_unique_named_elements() {
+    let app = UmbrelloApp::new(UmlModel::new(), false);
+    for (tool, expected) in [
+        (ToolMode::CreateComponent, "Component_1"),
+        (ToolMode::CreateNode, "Node_1"),
+        (ToolMode::CreateArtifact, "Artifact_1"),
+    ] {
+        let element = app.create_element_for_tool(tool);
+        assert_eq!(element.name(), expected);
+        assert!(matches!(
+            (tool, element),
+            (ToolMode::CreateComponent, ModelElement::Component(_))
+                | (ToolMode::CreateNode, ModelElement::Node(_))
+                | (ToolMode::CreateArtifact, ModelElement::Artifact(_))
+        ));
+    }
+}
+
+#[test]
+fn component_node_artifact_placement_is_atomic_and_restores_on_undo_redo() {
+    for (tool, expected) in [
+        (ToolMode::CreateComponent, "Component_1"),
+        (ToolMode::CreateNode, "Node_1"),
+        (ToolMode::CreateArtifact, "Artifact_1"),
+    ] {
+        let mut app = make_app_with_diagram();
+        let history_before = app.history.can_undo();
+        app.place_element(tool, Point::new(25.0, 35.0)).unwrap();
+        let id = app
+            .model
+            .iter()
+            .find(|(_, e)| e.name() == expected)
+            .unwrap()
+            .0;
+        assert!(!history_before);
+        assert_eq!(app.model.diagrams()[0].get_node(id).unwrap().bounds.width(), 160.0);
+        app.history.undo(&mut app.model).unwrap();
+        assert!(app.model.get(id).is_none());
+        assert!(app.model.diagrams()[0].get_node(id).is_none());
+        app.history.redo(&mut app.model).unwrap();
+        assert!(app.model.get(id).is_some());
+        assert!(app.model.diagrams()[0].get_node(id).is_some());
+    }
+}
+
+#[test]
+fn component_node_artifact_element_colors_are_distinct() {
+    let colors = [
+        element_color(Some(&ModelElement::Component(Component::new("C")))),
+        element_color(Some(&ModelElement::Node(Node::new("N")))),
+        element_color(Some(&ModelElement::Artifact(Artifact::new("A")))),
+    ];
+    assert!(colors[0] != colors[1] && colors[1] != colors[2] && colors[0] != colors[2]);
+}
+
+#[test]
+fn component_node_artifact_rendering_handles_all_artifact_modes_and_tiny_bounds() {
+    let mut model = UmlModel::new();
+    let ids = [
+        ModelElement::Component(Component::new("Component")),
+        ModelElement::Node(Node::new("Node")),
+        ModelElement::Artifact(Artifact::new("Artifact")),
+    ]
+    .into_iter()
+    .map(|element| {
+        let id = element.base().id;
+        model.insert(element);
+        id
+    })
+    .collect::<Vec<_>>();
+    let app = UmbrelloApp::new(model, false);
+    let ctx = egui::Context::default();
+    let _ = ctx.run(Default::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            for &id in &ids {
+                let node = uml_core::ViewNode::new(id, Rect::new(0.0, 0.0, 1.0, 1.0));
+                app.draw_partitioned_node(
+                    ui,
+                    &node,
+                    egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1.0, 1.0)),
+                );
+            }
+            for mode in [
+                ArtifactDrawMode::Default,
+                ArtifactDrawMode::File,
+                ArtifactDrawMode::Library,
+                ArtifactDrawMode::Table,
+            ] {
+                let mut artifact = Artifact::new("Mode");
+                artifact.draw_as = mode;
+                let id = artifact.base.id;
+                // This dispatch smoke test only needs the mode-specific element in the model.
+                let mut mode_model = UmlModel::new();
+                mode_model.insert(ModelElement::Artifact(artifact));
+                let mode_app = UmbrelloApp::new(mode_model, false);
+                let node = uml_core::ViewNode::new(id, Rect::new(0.0, 0.0, 1.0, 1.0));
+                mode_app.draw_partitioned_node(
+                    ui,
+                    &node,
+                    egui::Rect::from_min_size(egui::pos2(2.0, 2.0), egui::vec2(1.0, 1.0)),
+                );
+            }
+        });
+    });
 }

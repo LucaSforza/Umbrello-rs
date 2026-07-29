@@ -7,8 +7,8 @@
 
 use crate::app::UmbrelloApp;
 use uml_core::{
-    commands, Actor, AssociationType, Class, Datatype, Enum, Interface, ModelElement, Package,
-    Point, Size, UmlId, UseCase,
+    commands, Actor, Artifact, AssociationType, Class, Component, Datatype, Enum, Interface,
+    ModelElement, Node, Package, Point, Size, UmlId, UseCase,
 };
 
 /// The active tool in the tool palette.
@@ -31,6 +31,12 @@ pub(crate) enum ToolMode {
     CreateActor,
     /// Create a new UseCase element on click.
     CreateUseCase,
+    /// Create a new Component element on click.
+    CreateComponent,
+    /// Create a new deployment Node element on click.
+    CreateNode,
+    /// Create a new Artifact element on click.
+    CreateArtifact,
     // ── Edge-creation tools (M19) ──
     /// Create a Generalization (hollow triangle arrowhead).
     CreateGeneralization,
@@ -58,6 +64,9 @@ impl ToolMode {
             Self::CreatePackage => "📁 Package",
             Self::CreateActor => "🧑 Actor",
             Self::CreateUseCase => "⬭ UseCase",
+            Self::CreateComponent => "🧩 Component",
+            Self::CreateNode => "▣ Node",
+            Self::CreateArtifact => "📄 Artifact",
             Self::CreateGeneralization => "△ Generalization",
             Self::CreateRealization => "△ Realization",
             Self::CreateAssociation => "— Association",
@@ -69,7 +78,7 @@ impl ToolMode {
 
     /// Short tooltip description.
     #[allow(dead_code)]
-    fn tooltip(&self) -> &'static str {
+    pub(crate) fn tooltip(&self) -> &'static str {
         match self {
             Self::Select => "Select and move elements (S, Esc)",
             Self::CreateClass => "Create a Class (C)",
@@ -79,6 +88,9 @@ impl ToolMode {
             Self::CreatePackage => "Create a Package (P)",
             Self::CreateActor => "Create an Actor (T)",
             Self::CreateUseCase => "Create a UseCase (U)",
+            Self::CreateComponent => "Create a Component",
+            Self::CreateNode => "Create a deployment Node",
+            Self::CreateArtifact => "Create an Artifact",
             Self::CreateGeneralization => {
                 "Create a Generalization (G) — click-drag from subclass to superclass"
             },
@@ -106,6 +118,9 @@ impl ToolMode {
                 | Self::CreatePackage
                 | Self::CreateActor
                 | Self::CreateUseCase
+                | Self::CreateComponent
+                | Self::CreateNode
+                | Self::CreateArtifact
         )
     }
 
@@ -172,6 +187,18 @@ impl UmbrelloApp {
             ToolMode::CreateUseCase => {
                 let name = self.generate_unique_name("UseCase");
                 ModelElement::UseCase(UseCase::new(&name))
+            },
+            ToolMode::CreateComponent => {
+                let name = self.generate_unique_name("Component");
+                ModelElement::Component(Component::new(&name))
+            },
+            ToolMode::CreateNode => {
+                let name = self.generate_unique_name("Node");
+                ModelElement::Node(Node::new(&name))
+            },
+            ToolMode::CreateArtifact => {
+                let name = self.generate_unique_name("Artifact");
+                ModelElement::Artifact(Artifact::new(&name))
             },
             ToolMode::Select
             | ToolMode::CreateGeneralization
@@ -254,10 +281,13 @@ impl UmbrelloApp {
             ToolMode::CreatePackage,
             ToolMode::CreateActor,
             ToolMode::CreateUseCase,
+            ToolMode::CreateComponent,
+            ToolMode::CreateNode,
+            ToolMode::CreateArtifact,
         ] {
             let selected = self.current_tool == *tool;
             let button = egui::SelectableLabel::new(selected, tool.label());
-            if ui.add(button).clicked() {
+            if ui.add(button).on_hover_text(tool.tooltip()).clicked() {
                 self.choose_tool(*tool);
                 self.status_message = format!("Tool: {}", tool.label());
             }
@@ -277,7 +307,7 @@ impl UmbrelloApp {
         ] {
             let selected = self.current_tool == *tool;
             let button = egui::SelectableLabel::new(selected, tool.label());
-            if ui.add(button).clicked() {
+            if ui.add(button).on_hover_text(tool.tooltip()).clicked() {
                 self.choose_tool(*tool);
                 self.status_message = format!("Tool: {}", tool.label());
             }
