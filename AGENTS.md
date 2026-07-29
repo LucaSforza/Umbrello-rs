@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 323 tests passing across 5 crates. The core domain model covers 8 UML element types. The GUI application (egui/eframe) renders partitioned class boxes and semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, provides a tool palette for interactive element creation (click-to-place nodes for 7 element types, click-drag for 6 relationship types), and features a property editor panel. An opt-in Rust/rmcp stdio server now supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots.
+**Current state:** 334 tests passing across 5 crates. The core domain model covers 8 UML element types. The GUI application (egui/eframe) renders partitioned class boxes and semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, provides a tool palette for interactive element creation (click-to-place nodes for 7 element types, click-drag for 6 relationship types), features a property editor panel, and supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and viewport navigation targets.
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -135,20 +135,20 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 323 tests, all passing** (verified 2026-07-29).
+**Total: 334 tests, all passing** (verified 2026-07-29).
 
 ### By Crate
 
 | Test Suite | Count | What It Covers |
 |------------|-------|-----------------|
-| `uml-core` unit tests | 160 | Elements, repository invariants, types, diagrams, undo commands, and atomic `CreateElementWithNode` execute/undo/redo |
+| `uml-core` unit tests | 162 | Elements, repository invariants, types, diagrams including bounded/default zoom, undo commands, and atomic `CreateElementWithNode` execute/undo/redo |
 | `uml-core` id_tests | 8 | `id.rs` — UmlId generation, equality, ordering, Display, serde, UUIDv4 properties |
 | `uml-core` serde_roundtrip | 8 | External serde round-trip tests, including Actor and UseCase |
 | `uml-core` diagram_geometry | 2 | `diagram/geometry.rs` — Point, Size, Rect construction and arithmetic |
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
-| `uml-io` XMI unit tests | 59 | Reader/writer parsing, semantic round trips, diagrams, Actor/UseCase, relationships, and file helpers |
+| `uml-io` XMI unit tests | 61 | Reader/writer parsing, semantic round trips including diagram zoom, diagrams, Actor/UseCase, relationships, and file helpers |
 | `uml-io` real corpus | 1 | Parse the available C++ XMI corpus without failure |
-| `apps/umbrello` tests | 80 | Existing GUI behavior plus semantic QA targets, bounded/cancellable bridge, MCP router schemas, PNG output, atomic placement, and property synchronization |
+| `apps/umbrello` tests | 87 | Existing GUI behavior plus viewport transforms/navigation, semantic QA targets, bounded/cancellable bridge, MCP router schemas/CLI integration, PNG output, atomic placement, and property synchronization |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
 
 ### Test Commands
@@ -345,6 +345,17 @@ cargo test -p uml-core serde_roundtrip_model_element
 - MCP-triggered rename synchronizes the visible property edit buffer with model/tree state and undo/redo
 - Workspace minimum Rust version is 1.88, required by rmcp 3.0.0
 
+### M22 — Viewport Navigation & Zoom Persistence
+- **334 tests** verified across the workspace
+- `Diagram.zoom_percent` stores bounded 10–500% per-diagram zoom with a serde-compatible 100% default
+- UML 1.2 XMI reader/writer now preserve `diagram@zoom`; missing or malformed values default safely and out-of-range values clamp
+- Centralized affine viewport transform maps model geometry to screen geometry without changing semantic node coordinates
+- Mouse-wheel zoom uses the C++ Umbrello 1.15 factor and preserves the model point under the cursor
+- Middle-button drag pans transiently per diagram; View menu actions provide Zoom In/Out, Fit Diagram, 100%, and a percentage display
+- Fit handles empty diagrams, negative coordinates, and large bounds; viewport changes neither dirty the model nor enter command history
+- Existing seven-tool MCP surface exposes viewport zoom/pan state and `viewport.zoom_in`, `viewport.zoom_out`, `viewport.fit`, and `viewport.reset`; `ui_drag` on `canvas` pans by a screen-space delta
+- Main implementation locations: `apps/umbrello/src/viewport.rs`, `apps/umbrello/src/canvas.rs`, `crates/uml-core/src/diagram/mod.rs`, and `crates/uml-io/src/xmi/{reader,writer}.rs`
+
 ---
 
 ## Architecture Decisions
@@ -364,6 +375,7 @@ cargo test -p uml-core serde_roundtrip_model_element
 | **Core domain is pure** | `uml-core` has no GUI dependencies, no I/O — rendering, persistence, and code generation are separate crates |
 | **thiserror for errors** | Structured error types (`ModelError`, `CommandError`, `XmiParseError`) with `Display` + `Error` impls |
 | **In-process semantic MCP QA** | MCP operates stable UI targets through a bounded UI-thread bridge; no OS-global mouse injection or model access from async server threads |
+| **Persisted zoom, transient pan** | Diagram zoom is C++ XMI-compatible metadata; pan is per-diagram application state. Neither viewport operation is a command or dirty-model mutation |
 
 ---
 
@@ -685,8 +697,8 @@ The XMI reader at `crates/uml-io/src/xmi/reader.rs` (~2416 lines) currently hand
 | **Property editor panel** | Implemented in M18 via right-side panel with name, visibility, flags, documentation, classifier details | ~~HIGH~~ **DONE** |
 | **Resize handles** | Drag corner/edge handles not implemented | **MEDIUM** — nodes fixed size (can be worked around) |
 | **Edge creation** | Click-and-drag to create relationships implemented in M19 | ~~HIGH~~ **DONE** |
-| **Zoom controls** | No slider, fit-to-window, zoom in/out | **MEDIUM** — essential for large diagrams |
-| **Pan/scroll** | Middle-button drag to pan not implemented | **MEDIUM** — can't navigate large canvases |
+| **Zoom controls** | Implemented in M22: wheel zoom, View menu ±5%, Fit, 100%, and 10–500% bounds | ~~MEDIUM~~ **DONE** |
+| **Pan/scroll** | Implemented in M22 via middle-button drag with transient per-diagram pan | ~~MEDIUM~~ **DONE** |
 | **Multiple diagram tabs** | No tabbed interface for switching diagrams | **MEDIUM** — can only view one diagram at a time |
 | **Tree view with hierarchy** | Left panel shows flat element list | **MEDIUM** — should show package hierarchy tree |
 | **Context menus** | No right-click menus on nodes/edges | **MEDIUM** — essential for element actions |
@@ -948,4 +960,4 @@ Key architecture documents in `docs/` to read before implementing:
 
 ---
 
-*Last updated: 2026-07-29 · Umbrello-RS Milestone 21*
+*Last updated: 2026-07-29 · Umbrello-RS Milestone 22*
