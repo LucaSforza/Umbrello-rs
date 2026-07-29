@@ -1,7 +1,7 @@
 # Milestone 22 — Viewport Navigation and Zoom Persistence
 
-**Status:** implementation plan  
-**Reference implementation:** `../umbrello/umbrello/umlview.cpp`, `umlapp.cpp`, `umlscene.cpp`  
+**Status:** implementation plan
+**Reference implementation:** `../umbrello/umbrello/umlview.cpp`, `umlapp.cpp`, `umlscene.cpp`
 **Scope:** diagram zoom, pan, fit controls, XMI zoom compatibility, and MCP QA exposure
 
 ## Goal
