@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 334 tests passing across 5 crates. The core domain model covers 8 UML element types. The GUI application (egui/eframe) renders partitioned class boxes and semantic edges, supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty-flag tracking, provides a tool palette for interactive element creation (click-to-place nodes for 7 element types, click-drag for 6 relationship types), features a property editor panel, and supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and viewport navigation targets.
+**Current state:** 351 tests passing across 5 crates. The core domain model covers 11 UML element types. The GUI application (egui/eframe) renders partitioned class boxes, Component/Node/Artifact deployment shapes, and semantic edges; supports full File I/O (Open, Save, Save As, New) with native dialogs and dirty tracking; provides a tool palette for interactive element creation (click-to-place nodes for 10 element types, click-drag for 6 relationship types); features a property editor; and supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and semantic targets for all creation tools.
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -135,20 +135,20 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 334 tests, all passing** (verified 2026-07-29).
+**Total: 351 tests, all passing** (verified 2026-07-29).
 
 ### By Crate
 
 | Test Suite | Count | What It Covers |
 |------------|-------|-----------------|
-| `uml-core` unit tests | 162 | Elements, repository invariants, types, diagrams including bounded/default zoom, undo commands, and atomic `CreateElementWithNode` execute/undo/redo |
+| `uml-core` unit tests | 168 | Elements including Component/Node/Artifact, repository invariants, types, diagrams including bounded/default zoom, undo commands, and atomic `CreateElementWithNode` execute/undo/redo |
 | `uml-core` id_tests | 8 | `id.rs` — UmlId generation, equality, ordering, Display, serde, UUIDv4 properties |
-| `uml-core` serde_roundtrip | 8 | External serde round-trip tests, including Actor and UseCase |
+| `uml-core` serde_roundtrip | 9 | External serde round-trip tests, including Actor, UseCase, Component, Node, and all Artifact draw modes |
 | `uml-core` diagram_geometry | 2 | `diagram/geometry.rs` — Point, Size, Rect construction and arithmetic |
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
-| `uml-io` XMI unit tests | 61 | Reader/writer parsing, semantic round trips including diagram zoom, diagrams, Actor/UseCase, relationships, and file helpers |
+| `uml-io` XMI unit tests | 65 | Reader/writer parsing, common metadata compatibility, semantic round trips including diagram zoom and Component/Node/Artifact widgets, diagrams, relationships, and file helpers |
 | `uml-io` real corpus | 1 | Parse the available C++ XMI corpus without failure |
-| `apps/umbrello` tests | 87 | Existing GUI behavior plus viewport transforms/navigation, semantic QA targets, bounded/cancellable bridge, MCP router schemas/CLI integration, PNG output, atomic placement, and property synchronization |
+| `apps/umbrello` tests | 93 | Existing GUI behavior plus Component/Node/Artifact creation/rendering, viewport navigation, semantic QA targets, bounded/cancellable bridge, MCP schemas/CLI integration, PNG output, atomic placement, and property synchronization |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
 
 ### Test Commands
@@ -356,6 +356,16 @@ cargo test -p uml-core serde_roundtrip_model_element
 - Existing seven-tool MCP surface exposes viewport zoom/pan state and `viewport.zoom_in`, `viewport.zoom_out`, `viewport.fit`, and `viewport.reset`; `ui_drag` on `canvas` pans by a screen-space delta
 - Main implementation locations: `apps/umbrello/src/viewport.rs`, `apps/umbrello/src/canvas.rs`, `crates/uml-core/src/diagram/mod.rs`, and `crates/uml-io/src/xmi/{reader,writer}.rs`
 
+### M23 — Component, Node & Artifact
+- **351 tests** verified across the workspace
+- Added `Component { executable }`, deployment `Node`, `Artifact { draw_as }`, and four-value `ArtifactDrawMode` as first-class `ModelElement` variants
+- UML 1.2 XMI reads/writes `UML:Component@executable`, `UML:Node`, `UML:Artifact@drawas`, plus `componentwidget`, `nodewidget`, and `artifactwidget`; `deploymentwidget` remains a reader alias
+- Synthetic semantic round trips preserve original XMI IDs, scalar state, widget identity/bounds, and non-default diagram zoom because the existing corpus has no real examples of these tags
+- Native one-shot tools create all three types atomically through `CreateElementWithNode`; undo/redo restores model and diagram node together
+- Canvas rendering follows C++-inspired shapes: UML 2 component glyph/executable outline, 3D deployment node, and Default/File/Library/Table artifact modes
+- Existing seven MCP tools expose `tool.component`, `tool.node`, and `tool.artifact`; created elements use generic node/property/history interactions
+- Nested Component/Artifact containment, ports, and component classifier features remain deferred; M23 models their persisted scalar identity without emulating C++ package inheritance
+
 ---
 
 ## Architecture Decisions
@@ -442,6 +452,9 @@ Class       { base: ElementBase, classifier: ClassifierData }
 Interface   { base: ElementBase, is_abstract: true, classifier: ClassifierData }
 Enum        { base: ElementBase, classifier: ClassifierData, literals: Vec<EnumLiteral> }
 Datatype    { base: ElementBase, classifier: ClassifierData }
+Component   { base: ElementBase, executable: bool }
+Node        { base: ElementBase }
+Artifact    { base: ElementBase, draw_as: ArtifactDrawMode }
 Relationship { base: ElementBase, kind: AssociationType, source_id: UmlId, target_id: UmlId, ... }
 
 // Type-safe dispatch
@@ -453,6 +466,9 @@ enum ModelElement {
     Datatype(Datatype),
     Actor(Actor),
     UseCase(UseCase),
+    Component(Component),
+    Node(Node),
+    Artifact(Artifact),
     Relationship(Relationship),
 }
 
@@ -490,6 +506,7 @@ Diagram {
     id: DiagramId,
     name: String,
     kind: DiagramKind,
+    zoom_percent: f64,
     nodes: IndexMap<UmlId, ViewNode>,
     edges: IndexMap<EdgeId, ViewEdge>,
 }
@@ -561,9 +578,9 @@ These element types are defined in the `ObjectType` enum but have no correspondi
 |---------|-------------|----------------|--------|
 | **Actor** | Use case diagrams | Add struct + ModelElement variant + XMI reader/writer | **DONE (M20)** |
 | **UseCase** | Use case diagrams | Add struct + ModelElement variant + XMI reader/writer | **DONE (M20)** |
-| **Component** | Component diagrams | Add struct + ModelElement variant + XMI reader/writer | NOT STARTED |
-| **Node** | Deployment diagrams | Add struct + ModelElement variant + XMI reader/writer | NOT STARTED |
-| **Artifact** | Deployment/component diagrams | Add struct + ModelElement variant + XMI reader/writer | NOT STARTED |
+| **Component** | Component diagrams | Add struct + ModelElement variant + XMI reader/writer | **DONE (M23; nested containment/ports deferred)** |
+| **Node** | Deployment diagrams | Add struct + ModelElement variant + XMI reader/writer | **DONE (M23)** |
+| **Artifact** | Deployment/component diagrams | Add struct + ModelElement variant + XMI reader/writer | **DONE (M23; file integration deferred)** |
 | **Port** | Class/component diagrams | Add struct + ModelElement variant | NOT STARTED |
 | **Instance** | Object diagrams | Add struct + ModelElement variant | NOT STARTED |
 | **Category** | EER diagrams | Add struct + ModelElement variant | NOT STARTED |
@@ -597,6 +614,7 @@ enum ModelElement {
 | Feature | Current State | Required Work |
 |---------|--------------|---------------|
 | **Actor/UseCase element parsing** | **DONE (M20)** — `UML:Actor` and `UML:UseCase` elements now parsed | Actor + UseCase struct + reader/writer implemented |
+| **Component/Node/Artifact parsing** | **DONE (M23)** — model tags, scalar attributes, and diagram widgets round-trip | Nested component contents and ports remain deferred |
 | **Note widget parsing** | Notes in XMI diagrams not mapped | Add note widget type + parsing |
 | **Sequence diagram messages** | `UML:Message` elements ignored | Add message relationship type + parsing |
 | **State diagram elements** | `UML:StateVertex`, `UML:StateMachine`, `UML:Transition` not parsed | Add state machine types + parsing |
@@ -620,7 +638,7 @@ The XMI reader at `crates/uml-io/src/xmi/reader.rs` (~2416 lines) currently hand
 
 **Not handled:**
 - `UML:Actor`, `UML:UseCase` — **DONE (M20)**
-- `UML:Component`, `UML:Node`, `UML:Artifact` — not parsed (silently skipped)
+- `UML:Component`, `UML:Node`, `UML:Artifact` — **DONE (M23)**
 - `UML:TaggedValue` — stereotype properties not parsed
 - `UML:Stereotype` — stereotype definitions not parsed
 - `UML:Message` — sequence diagram messages not parsed
@@ -957,7 +975,8 @@ Key architecture documents in `docs/` to read before implementing:
 | `testing_strategy.md` | Test philosophy, property-based testing plans | Adding tests |
 | `phase1_architecture_audit.md` | Initial architecture decisions and rationale | Understanding design choices |
 | `designs/milestone_20.md` | Actor & UseCase domain types, XMI reader/writer, stick-figure rendering, tool palette | Adding new simple element types |
+| `designs/milestone_23_component_node_artifact.md` | Component, deployment Node, Artifact domain/XMI/rendering/MCP design | Extending structural/deployment element support |
 
 ---
 
-*Last updated: 2026-07-29 · Umbrello-RS Milestone 22*
+*Last updated: 2026-07-29 · Umbrello-RS Milestone 23*
