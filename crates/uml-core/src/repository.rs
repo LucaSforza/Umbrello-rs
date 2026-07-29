@@ -385,7 +385,11 @@ impl UmlModel {
                         });
                     }
                 },
-                ModelElement::Actor(_) | ModelElement::UseCase(_) => {
+                ModelElement::Actor(_)
+                | ModelElement::UseCase(_)
+                | ModelElement::Component(_)
+                | ModelElement::Node(_)
+                | ModelElement::Artifact(_) => {
                     // These types have no additional references beyond the generic stereotype check below.
                 },
             }

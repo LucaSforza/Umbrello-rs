@@ -688,6 +688,90 @@ impl UseCase {
     }
 }
 
+// ─── Component, Node, and Artifact ─────────────────────────────────────
+
+/// How a UML artifact is drawn in a diagram.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArtifactDrawMode {
+    /// Draw the artifact as a plain rectangle.
+    #[default]
+    Default,
+    /// Draw the artifact as a file with a folded corner.
+    File,
+    /// Draw the artifact as a library.
+    Library,
+    /// Draw the artifact as a table.
+    Table,
+}
+
+/// A UML component.
+///
+/// Components are non-classifier, non-container elements. The executable flag
+/// records whether the component is executable in the source UML model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Component {
+    /// Common element metadata.
+    pub base: ElementBase,
+    /// Whether this component is executable.
+    #[serde(default)]
+    pub executable: bool,
+}
+
+impl Component {
+    /// Create a non-executable component with the given name.
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self {
+            base: ElementBase::new(name),
+            executable: false,
+        }
+    }
+}
+
+/// A UML deployment node.
+///
+/// Nodes are non-classifier, non-container elements that carry only common
+/// UML identity and metadata.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Node {
+    /// Common element metadata.
+    pub base: ElementBase,
+}
+
+impl Node {
+    /// Create a node with the given name.
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self {
+            base: ElementBase::new(name),
+        }
+    }
+}
+
+/// A UML artifact.
+///
+/// Artifacts are non-classifier, non-container elements whose draw mode
+/// controls their diagram representation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Artifact {
+    /// Common element metadata.
+    pub base: ElementBase,
+    /// Diagram representation mode.
+    #[serde(default)]
+    pub draw_as: ArtifactDrawMode,
+}
+
+impl Artifact {
+    /// Create an artifact with the default draw mode and given name.
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self {
+            base: ElementBase::new(name),
+            draw_as: ArtifactDrawMode::Default,
+        }
+    }
+}
+
 // ─── ModelElement enum (type-safe dispatch) ─────────────────────────
 
 /// A UML model element.
@@ -713,6 +797,12 @@ pub enum ModelElement {
     Actor(Actor),
     /// A UseCase in a Use Case diagram.
     UseCase(UseCase),
+    /// A UML component.
+    Component(Component),
+    /// A UML deployment node.
+    Node(Node),
+    /// A UML artifact.
+    Artifact(Artifact),
 }
 
 impl ModelElement {
@@ -728,6 +818,9 @@ impl ModelElement {
             Self::Relationship(rel) => rel.object_type(),
             Self::Actor(_) => ObjectType::Actor,
             Self::UseCase(_) => ObjectType::UseCase,
+            Self::Component(_) => ObjectType::Component,
+            Self::Node(_) => ObjectType::Node,
+            Self::Artifact(_) => ObjectType::Artifact,
         }
     }
 
@@ -743,6 +836,9 @@ impl ModelElement {
             Self::Relationship(r) => &r.base,
             Self::Actor(a) => &a.base,
             Self::UseCase(u) => &u.base,
+            Self::Component(c) => &c.base,
+            Self::Node(n) => &n.base,
+            Self::Artifact(a) => &a.base,
         }
     }
 
@@ -757,6 +853,9 @@ impl ModelElement {
             Self::Relationship(r) => &mut r.base,
             Self::Actor(a) => &mut a.base,
             Self::UseCase(u) => &mut u.base,
+            Self::Component(c) => &mut c.base,
+            Self::Node(n) => &mut n.base,
+            Self::Artifact(a) => &mut a.base,
         }
     }
 
@@ -797,7 +896,13 @@ impl ModelElement {
             Self::Interface(i) => Some(&i.classifier),
             Self::Enum(e) => Some(&e.classifier),
             Self::Datatype(d) => Some(&d.classifier),
-            Self::Package(_) | Self::Relationship(_) | Self::Actor(_) | Self::UseCase(_) => None,
+            Self::Package(_)
+            | Self::Relationship(_)
+            | Self::Actor(_)
+            | Self::UseCase(_)
+            | Self::Component(_)
+            | Self::Node(_)
+            | Self::Artifact(_) => None,
         }
     }
 
@@ -808,7 +913,13 @@ impl ModelElement {
             Self::Interface(i) => Some(&mut i.classifier),
             Self::Enum(e) => Some(&mut e.classifier),
             Self::Datatype(d) => Some(&mut d.classifier),
-            Self::Package(_) | Self::Relationship(_) | Self::Actor(_) | Self::UseCase(_) => None,
+            Self::Package(_)
+            | Self::Relationship(_)
+            | Self::Actor(_)
+            | Self::UseCase(_)
+            | Self::Component(_)
+            | Self::Node(_)
+            | Self::Artifact(_) => None,
         }
     }
 }
@@ -1367,5 +1478,101 @@ mod tests {
         let json = serde_json::to_string(&uc).unwrap();
         let back: UseCase = serde_json::from_str(&json).unwrap();
         assert_eq!(uc, back);
+    }
+
+    // ── Component, Node, and Artifact tests ──────────────────────────
+
+    #[test]
+    fn component_creation_and_defaults() {
+        let component = Component::new("Service");
+        assert_eq!(component.base.name, "Service");
+        assert!(!component.executable);
+        assert_eq!(component.base.visibility, Visibility::Public);
+        assert!(component.base.original_xmi_id.is_none());
+    }
+
+    #[test]
+    fn node_creation_and_defaults() {
+        let node = Node::new("Host");
+        assert_eq!(node.base.name, "Host");
+        assert_eq!(node.base.visibility, Visibility::Public);
+        assert!(node.base.original_xmi_id.is_none());
+    }
+
+    #[test]
+    fn artifact_creation_and_draw_modes() {
+        let artifact = Artifact::new("Model");
+        assert_eq!(artifact.base.name, "Model");
+        assert_eq!(artifact.draw_as, ArtifactDrawMode::Default);
+
+        for mode in [
+            ArtifactDrawMode::Default,
+            ArtifactDrawMode::File,
+            ArtifactDrawMode::Library,
+            ArtifactDrawMode::Table,
+        ] {
+            let mut artifact = Artifact::new("Model");
+            artifact.draw_as = mode;
+            assert_eq!(artifact.draw_as, mode);
+        }
+    }
+
+    #[test]
+    fn new_element_ids_are_unique() {
+        let component = Component::new("Component");
+        let node = Node::new("Node");
+        let artifact = Artifact::new("Artifact");
+        assert_ne!(component.base.id, node.base.id);
+        assert_ne!(component.base.id, artifact.base.id);
+        assert_ne!(node.base.id, artifact.base.id);
+    }
+
+    #[test]
+    fn model_element_component_node_artifact_dispatch() {
+        let mut elements = [
+            ModelElement::Component(Component::new("Component")),
+            ModelElement::Node(Node::new("Node")),
+            ModelElement::Artifact(Artifact::new("Artifact")),
+        ];
+
+        assert_eq!(elements[0].object_type(), ObjectType::Component);
+        assert_eq!(elements[1].object_type(), ObjectType::Node);
+        assert_eq!(elements[2].object_type(), ObjectType::Artifact);
+
+        for element in &elements {
+            assert!(!element.is_classifier());
+            assert!(!element.is_package());
+            assert!(element.classifier_data().is_none());
+        }
+
+        elements[0].base_mut().original_xmi_id = Some("component-xmi".into());
+        assert_eq!(elements[0].base().original_xmi_id.as_deref(), Some("component-xmi"));
+        assert_eq!(elements[0].name(), "Component");
+        assert_eq!(elements[1].id(), elements[1].base().id);
+        assert_eq!(elements[2].name(), "Artifact");
+    }
+
+    #[test]
+    fn serde_roundtrip_component_node_and_artifact() {
+        let mut component = Component::new("Service");
+        component.executable = true;
+        let component_json = serde_json::to_string(&component).unwrap();
+        assert_eq!(component, serde_json::from_str(&component_json).unwrap());
+
+        let node = Node::new("Host");
+        let node_json = serde_json::to_string(&node).unwrap();
+        assert_eq!(node, serde_json::from_str(&node_json).unwrap());
+
+        for mode in [
+            ArtifactDrawMode::Default,
+            ArtifactDrawMode::File,
+            ArtifactDrawMode::Library,
+            ArtifactDrawMode::Table,
+        ] {
+            let mut artifact = Artifact::new("Model");
+            artifact.draw_as = mode;
+            let json = serde_json::to_string(&artifact).unwrap();
+            assert_eq!(artifact, serde_json::from_str(&json).unwrap());
+        }
     }
 }

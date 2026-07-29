@@ -144,3 +144,24 @@ fn serde_roundtrip_usecase() {
     let uc = UseCase::new("Login");
     roundtrip(&uc);
 }
+
+#[test]
+fn serde_roundtrip_component_node_and_artifact() {
+    use uml_core::{Artifact, ArtifactDrawMode, Component, Node};
+
+    let mut component = Component::new("Service");
+    component.executable = true;
+    roundtrip(&component);
+    roundtrip(&Node::new("Host"));
+
+    for mode in [
+        ArtifactDrawMode::Default,
+        ArtifactDrawMode::File,
+        ArtifactDrawMode::Library,
+        ArtifactDrawMode::Table,
+    ] {
+        let mut artifact = Artifact::new("Model");
+        artifact.draw_as = mode;
+        roundtrip(&artifact);
+    }
+}

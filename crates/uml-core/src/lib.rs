@@ -42,9 +42,9 @@ pub use diagram::{
     Diagram, DiagramId, DiagramKind, EdgeId, LineRouting, Point, Rect, Size, ViewEdge, ViewNode,
 };
 pub use elements::{
-    Actor, Attribute, Class, ClassifierData, Datatype, ElementBase, Enum, EnumLiteral, Interface,
-    ModelElement, NamedElement, Operation, Package, Parameter, Relationship, TemplateParameter,
-    TypeReference, UseCase,
+    Actor, Artifact, ArtifactDrawMode, Attribute, Class, ClassifierData, Component, Datatype,
+    ElementBase, Enum, EnumLiteral, Interface, ModelElement, NamedElement, Node, Operation,
+    Package, Parameter, Relationship, TemplateParameter, TypeReference, UseCase,
 };
 pub use id::UmlId;
 pub use repository::{ModelError, ReferenceError, ReferenceField, UmlModel};
