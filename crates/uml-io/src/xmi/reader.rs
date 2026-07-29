@@ -896,11 +896,15 @@ impl XmiReader {
         let documentation = Self::attr_value(e, "documentation")
             .or_else(|| Self::attr_value(e, "comment"))
             .unwrap_or_default();
-        let is_static = Self::attr_value(e, "isStatic")
-            .or_else(|| Self::attr_value(e, "static"))
-            .is_some_and(|value| Self::parse_bool(&value))
-            || Self::attr_value(e, "scope").is_some_and(|value| value == "classifier_level")
-            || Self::attr_value(e, "ownerScope").is_some_and(|value| value == "classifier");
+        let is_static = if let Some(value) = Self::attr_value(e, "static") {
+            Self::parse_bool(&value)
+        } else if let Some(value) = Self::attr_value(e, "ownerScope") {
+            value == "classifier"
+        } else if let Some(value) = Self::attr_value(e, "isStatic") {
+            Self::parse_bool(&value)
+        } else {
+            Self::attr_value(e, "scope").is_some_and(|value| value == "classifier_level")
+        };
 
         let uml_id = self.register_id(&xmi_id)?;
         self.register_name(&name, uml_id);
@@ -2894,7 +2898,7 @@ mod tests {
 
     #[test]
     fn parse_common_metadata_legacy_attributes_and_defaults() {
-        let xml = r#"<XMI><XMI.content><UML:Model xmi.id="M"><UML:Component xmi.id="C" name="Legacy" comment="from comment" static="true"/><UML:Node xmi.id="N" name="Scope" scope="classifier_level"/><UML:Artifact xmi.id="A" name="Owner" ownerScope="classifier"/><UML:Component xmi.id="D" name="Defaults"/></UML:Model></XMI.content></XMI>"#;
+        let xml = r#"<XMI><XMI.content><UML:Model xmi.id="M"><UML:Component xmi.id="C" name="Legacy" comment="from comment" static="true"/><UML:Node xmi.id="N" name="Scope" scope="classifier_level"/><UML:Artifact xmi.id="A" name="Owner" ownerScope="classifier"/><UML:Component xmi.id="D" name="Defaults"/><UML:Node xmi.id="F" name="StaticFalse" static="false" ownerScope="classifier" isStatic="true" scope="classifier_level"/><UML:Artifact xmi.id="P" name="OwnerPrecedence" ownerScope="classifier" isStatic="false" scope="none"/></UML:Model></XMI.content></XMI>"#;
         let mut model = UmlModel::new();
         let mut reader = XmiReader::new();
         reader.read_from(xml.as_bytes(), &mut model).unwrap();
@@ -2915,6 +2919,10 @@ mod tests {
         );
         assert!(
             matches!(common("Defaults"), ModelElement::Component(component) if component.base.documentation.is_empty() && !component.base.is_static)
+        );
+        assert!(matches!(common("StaticFalse"), ModelElement::Node(node) if !node.base.is_static));
+        assert!(
+            matches!(common("OwnerPrecedence"), ModelElement::Artifact(artifact) if artifact.base.is_static)
         );
     }
 }
