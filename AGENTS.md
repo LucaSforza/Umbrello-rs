@@ -135,7 +135,7 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 396 tests, all passing** (verified 2026-07-31).
+**Total: 396 tests, all passing** (verified 2026-07-30).
 
 ### By Crate
 
@@ -389,6 +389,7 @@ cargo test -p uml-core serde_roundtrip_model_element
 - Background deselection no longer overlaps node pointer ownership
 - Shared begin/update/commit drag state machine accumulates multi-frame screen deltas, commits one MoveNode, undo restores, and no-motion clicks are no-ops
 - Existing seven-tool MCP ui_drag has optional gesture mode for the shared flow
+- Project-local `.opencode/skills/umbrello-mcp-qa/` provides versioned standard-library Python MCP client/smoke scripts for read-only gesture QA and create/save/relaunch persistence QA; the reviewer prompt requires this skill instead of disposable scripts
 - Main implementation locations: `crates/uml-io/src/xmi/writer.rs`, `apps/umbrello/src/{app,canvas,tests}.rs`, and `apps/umbrello/src/qa/{control,protocol,mcp}.rs`
 
 **Current limitation:** Already-corrupted external XMI files containing duplicate semantic defining IDs remain rejected; the fix prevents new writer output from creating them. Attribute/operation authoring remains absent: existing attributes/operations load, render, and show read-only, but creation/editing commands and UI are deferred.

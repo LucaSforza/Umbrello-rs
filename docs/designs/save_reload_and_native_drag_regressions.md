@@ -1,6 +1,6 @@
 # Save/Reload and Native Drag Regressions
 
-**Status:** implemented; integrated validation passed; final independent review pending  
+**Status:** implemented; integrated validation passed; final independent review approved
 **Scope:** repair invalid XMI produced by Umbrello-RS and restore native mouse dragging of selected diagram nodes  
 **Method:** strict red-green-regression TDD with independent final MCP/native-gesture QA
 
@@ -355,7 +355,7 @@ Blocking or major findings create fix subtasks resumed with the original impleme
 
 **Commits (oldest to newest):** `da60d53`, `dc91de2`, `6dbc530`, `94cac43`, `99193ea`, `1b7c98a`, `1ea5bc0`, `01a7868`
 
-**Integrated validation:** first pass on 2026-07-30 (391 tests). Rerun after S2F2 on 2026-07-31 with **396 tests**:
+**Integrated validation:** first pass on 2026-07-30 (391 tests). Rerun after S2F2 on 2026-07-30 with **396 tests**:
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -366,3 +366,5 @@ cargo test --workspace
 - G3 found duplicate nested-package emission in output XMI
 - S2F1 eliminated duplicate definitions by writing each structural child under its canonical package parent exactly once
 - S2F2 restored Package.children and parent_index on read so round-trip preserves containment; deterministic canonical ownership prevents multi-parent duplicates
+- G3-R1 approved the corrected integrated state after independent validation and renewed live MCP gesture/sync/undo/screenshot QA
+- Follow-up project skill `.opencode/skills/umbrello-mcp-qa/` versions the reusable MCP client and read-only/persistence smoke workflows used for automated native QA
