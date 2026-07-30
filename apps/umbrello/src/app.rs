@@ -878,8 +878,14 @@ impl eframe::App for UmbrelloApp {
         egui::SidePanel::right("property_panel")
             .resizable(true)
             .default_width(280.0)
+            .min_width(200.0)
+            .max_width(400.0)
             .show(ctx, |ui| {
-                self.render_property_editor(ui);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        self.render_property_editor(ui);
+                    });
             });
         // CentralPanel must be last so its max_rect is the actual
         // canvas area (excluding both side panels).  If CentralPanel

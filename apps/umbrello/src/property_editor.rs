@@ -369,9 +369,20 @@ impl UmbrelloApp {
                             ui.horizontal(|ui| {
                                 ui.label(format!("#{j}"));
                                 ui.label("N:");
-                                ui.text_edit_singleline(&mut param.name);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut param.name)
+                                        .desired_width(80.0),
+                                );
                                 ui.label("T:");
-                                ui.text_edit_singleline(&mut param.type_text);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut param.type_text)
+                                        .desired_width(80.0),
+                                );
+                                if ui.button("×").clicked() {
+                                    delete_param = Some(j);
+                                }
+                            });
+                            ui.horizontal(|ui| {
                                 ui.label("Dir:");
                                 let dir_options = [
                                     uml_core::ParameterDirection::In,
@@ -396,10 +407,10 @@ impl UmbrelloApp {
                                         }
                                     });
                                 ui.label("Def:");
-                                ui.text_edit_singleline(&mut param.default_value);
-                                if ui.button("×").clicked() {
-                                    delete_param = Some(j);
-                                }
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut param.default_value)
+                                        .desired_width(80.0),
+                                );
                             });
                         });
                     }

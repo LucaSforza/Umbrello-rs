@@ -7,7 +7,9 @@
 // binary target sees this code as unused.
 #![allow(unused_imports)]
 
-use crate::app::{DraftAttribute, DraftOperation, DraftParameter, UmbrelloApp};
+use crate::app::{
+    ClassifierDraft, DraftAttribute, DraftOperation, DraftParameter, UmbrelloApp,
+};
 use crate::rendering::{element_color, type_display, visibility_symbol};
 use crate::tool_palette::ToolMode;
 use eframe::App;
@@ -15,8 +17,9 @@ use image::GenericImageView;
 use std::path::PathBuf;
 use uml_core::{
     commands, Actor, Artifact, ArtifactDrawMode, AssociationType, Class, Command, Component,
-    Datatype, Diagram, DiagramKind, Enum, Interface, ModelElement, Node, Package, Point, Rect,
-    Relationship, Size, TypeReference, UmlId, UmlModel, UseCase, ViewEdge, ViewNode, Visibility,
+    Datatype, Diagram, DiagramKind, Enum, Interface, ModelElement, Node, Package, ParameterDirection,
+    Point, Rect, Relationship, Size, TypeReference, UmlId, UmlModel, UseCase, ViewEdge, ViewNode,
+    Visibility,
 };
 
 #[test]
@@ -1531,6 +1534,133 @@ fn dirty_flag_set_on_property_change() {
     let cmd = commands::ChangeVisibility::new(&app.model, id, Visibility::Private).unwrap();
     app.execute_command(Box::new(cmd));
     assert!(app.is_dirty);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// S8 — Property Panel Layout Regressions
+// ══════════════════════════════════════════════════════════════════
+
+/// Create an UmbrelloApp with a selected classifier that has a rich
+/// multi-feature multi-parameter draft, for layout regression tests.
+#[allow(dead_code)]
+fn make_classifier_app_with_rich_draft() -> UmbrelloApp {
+    let mut app = make_app_with_two_nodes();
+    let id = app.model.iter().next().unwrap().0;
+    app.selected_element_id = Some(id);
+    app.refresh_property_buffers();
+    app.classifier_draft = Some((
+        id,
+        ClassifierDraft {
+            attributes: vec![
+                DraftAttribute {
+                    name: "id".into(),
+                    type_text: "int".into(),
+                    original_type: TypeReference::unspecified(),
+                    visibility: Visibility::Private,
+                    initial_value: String::new(),
+                    is_static: false,
+                },
+                DraftAttribute {
+                    name: "name".into(),
+                    type_text: "String".into(),
+                    original_type: TypeReference::unspecified(),
+                    visibility: Visibility::Public,
+                    initial_value: "\"default\"".into(),
+                    is_static: false,
+                },
+                DraftAttribute {
+                    name: "email".into(),
+                    type_text: "String".into(),
+                    original_type: TypeReference::unspecified(),
+                    visibility: Visibility::Public,
+                    initial_value: String::new(),
+                    is_static: false,
+                },
+            ],
+            operations: vec![
+                DraftOperation {
+                    name: "calculate".into(),
+                    return_type_text: "Result".into(),
+                    original_return_type: TypeReference::unspecified(),
+                    parameters: vec![
+                        DraftParameter {
+                            name: "input".into(),
+                            type_text: "Params".into(),
+                            original_type: TypeReference::unspecified(),
+                            direction: ParameterDirection::In,
+                            default_value: String::new(),
+                        },
+                        DraftParameter {
+                            name: "options".into(),
+                            type_text: "Config".into(),
+                            original_type: TypeReference::unspecified(),
+                            direction: ParameterDirection::In,
+                            default_value: "None".into(),
+                        },
+                    ],
+                    visibility: Visibility::Public,
+                    is_static: false,
+                    is_abstract: false,
+                    is_virtual: false,
+                },
+                DraftOperation {
+                    name: "validate".into(),
+                    return_type_text: "bool".into(),
+                    original_return_type: TypeReference::unspecified(),
+                    parameters: vec![DraftParameter {
+                        name: "value".into(),
+                        type_text: "String".into(),
+                        original_type: TypeReference::unspecified(),
+                        direction: ParameterDirection::In,
+                        default_value: String::new(),
+                    }],
+                    visibility: Visibility::Public,
+                    is_static: false,
+                    is_abstract: false,
+                    is_virtual: false,
+                },
+            ],
+        },
+    ));
+    app
+}
+
+/// PNL-01: At 1024x768 with populated multi-feature classifier draft,
+/// the canvas retains at least 300 logical pixels width.
+#[test]
+fn property_panel_layout_1024x768_keeps_canvas_300() {
+    let mut app = make_classifier_app_with_rich_draft();
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let screen_size = egui::vec2(1024.0, 768.0);
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+    let canvas = app.last_canvas_rect.expect("canvas_rect must be set after frame");
+    assert!(
+        canvas.width() >= 300.0,
+        "canvas width {:.1} should be >= 300 at 1024x768",
+        canvas.width()
+    );
+}
+
+/// PNL-02: At 1741x1306 with populated multi-feature classifier draft,
+/// the canvas retains at least 600 logical pixels width.
+#[test]
+fn property_panel_layout_1741x1306_keeps_canvas_600() {
+    let mut app = make_classifier_app_with_rich_draft();
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let screen_size = egui::vec2(1741.0, 1306.0);
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+    let canvas = app.last_canvas_rect.expect("canvas_rect must be set after frame");
+    assert!(
+        canvas.width() >= 600.0,
+        "canvas width {:.1} should be >= 600 at 1741x1306",
+        canvas.width()
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
