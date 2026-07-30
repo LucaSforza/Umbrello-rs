@@ -1553,4 +1553,110 @@ mod tests {
 
         round_trip_and_compare(&model);
     }
+
+    // ─── ID collision regression tests (RED TDD) ─────────────────────
+
+    /// Regression baseline: a minimal model with one Class and one Class diagram
+    /// must survive a save-then-reload round trip.
+    #[test]
+    fn save_reload_one_class_diagram() {
+        let mut model = UmlModel::new();
+
+        let cls = Class::new("Person");
+        let cls_id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+
+        let mut diagram = uml_core::Diagram::new("Main", uml_core::DiagramKind::Class);
+        diagram.add_node(
+            cls_id,
+            uml_core::ViewNode::new(cls_id, uml_core::Rect::new(50.0, 100.0, 150.0, 80.0)),
+        );
+        model.add_diagram(diagram);
+
+        let xml = write_to_string(&model);
+
+        // Basic structural assertions
+        assert!(xml.contains("UML:Model"), "output must contain UML:Model");
+        assert!(xml.contains("UML:Class"), "output must contain UML:Class");
+        assert!(xml.contains("classwidget"), "output must contain classwidget");
+
+        // Round-trip
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        assert!(
+            restored.iter().any(|(_, e)| e.name() == "Person"),
+            "Person must survive round-trip"
+        );
+        assert_eq!(restored.diagrams().len(), 1, "one diagram must survive");
+        assert_eq!(restored.diagrams()[0].name, "Main");
+        assert_eq!(restored.diagrams()[0].node_count(), 1);
+    }
+
+    /// Regression: when a model element has a preserved original_xmi_id that
+    /// matches the `rs`-prefix pattern (from a previous Umbrello-RS save), and
+    /// no root Package exists, the UML:Model wrapper must not reuse that same
+    /// xmi.id value.  The writer's `pre_assign_ids` never increments `next_id`
+    /// for elements with an original_xmi_id, so the subsequently generated
+    /// UML:Model wrapper ID aliases the element's ID — a collision that makes
+    /// the output unparseable.
+    ///
+    /// This is a RED TDD test: it deliberately exercises the collision and
+    /// asserts that the reader can still parse the output.  It will fail on
+    /// the current production code.  No production fix is applied here.
+    #[test]
+    fn generated_xmi_ids_do_not_collide() {
+        // Model with one Class that has a preserved rs-prefixed ID and NO root
+        // Package.  The writer's `find_root_model_id()` returns None, forcing
+        // `write_model_wrapper` to generate a fresh ID — which aliases the
+        // Class's ID because next_id never advanced during pre-assign.
+        let mut model = UmlModel::new();
+        let mut cls = Class::new("MyClass");
+        cls.base.original_xmi_id = Some("rs00000001".into());
+        let cls_id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+
+        // Add a diagram with a classwidget so we also verify that widget
+        // xmi.id references (which share the model element ID) are NOT
+        // treated as new semantic definitions by the reader.
+        let mut diagram = uml_core::Diagram::new("Main", uml_core::DiagramKind::Class);
+        diagram.add_node(
+            cls_id,
+            uml_core::ViewNode::new(cls_id, uml_core::Rect::new(50.0, 100.0, 150.0, 80.0)),
+        );
+        model.add_diagram(diagram);
+
+        let xml = write_to_string(&model);
+
+        // Verify widget reference pattern is present (classwidget shares the
+        // class's xmi.id — this is a valid reference, not a definition).
+        assert!(xml.contains("classwidget"), "classwidget should appear in output");
+
+        // The critical assertion: the output must be parseable.  A collision
+        // between UML:Model xmi.id and UML:Class xmi.id causes the reader to
+        // fail with XmiParseError::DuplicateId.
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        let result = reader.read_from(xml.as_bytes(), &mut restored);
+
+        assert!(
+            result.is_ok(),
+            "xmi.id collision detected between UML:Model wrapper and a semantic \
+             element. The writer gave both the ID 'rs00000001' because next_id \
+             never advanced during pre_assign_ids (all elements had original_xmi_id). \
+             Fix: increment next_id past already-assigned original IDs during \
+             pre-assign.\nReader error: {:?}\nXML:\n{}",
+            result.err(),
+            xml
+        );
+
+        reader.resolve(&mut restored).unwrap();
+        assert!(
+            restored.iter().any(|(_, e)| e.name() == "MyClass"),
+            "MyClass must survive round-trip"
+        );
+        assert_eq!(restored.diagrams().len(), 1, "diagram must survive");
+    }
 }
