@@ -1,7 +1,7 @@
 # Property Authoring and Edge Interaction Fixes
 
-**Status:** approved for implementation  
-**Scope:** property-panel interaction ownership, classifier-feature authoring, UML edge endpoints/styles, and live edge tracking during node drag  
+**Status:** approved for implementation
+**Scope:** property-panel interaction ownership, classifier-feature authoring, UML edge endpoints/styles, and live edge tracking during node drag
 **Plan date:** 2026-07-30
 
 ## Goal
