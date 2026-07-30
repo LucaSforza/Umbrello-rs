@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 381 tests passing across 5 crates. The core domain model covers 11 UML element types. The GUI application (egui/eframe) renders partitioned class boxes, Component/Node/Artifact deployment shapes, and selectable semantic edges; uses a project-first XMI workflow; creates and switches among Class, Use Case, Component, and Deployment diagrams; filters authoring tools by diagram kind; provides a clickable/reusable model browser and relationship-aware property editor; and supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and semantic targets for projects, diagrams, browser elements, nodes, edges, properties, and history.
+**Current state:** 391 tests passing across 5 crates. The core domain model covers 11 UML element types. The GUI application (egui/eframe) renders partitioned class boxes, Component/Node/Artifact deployment shapes, and selectable semantic edges; uses a project-first XMI workflow; creates and switches among Class, Use Case, Component, and Deployment diagrams; filters authoring tools by diagram kind; provides a clickable/reusable model browser and relationship-aware property editor; supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan; writer-assigned XMI IDs are document-wide collision-safe; selected nodes support cumulative native mouse drag with one command on release and no-motion click adds no history. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and semantic targets for projects, diagrams, browser elements, nodes, edges, properties, and history.
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -135,7 +135,7 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 381 tests, all passing** (verified 2026-07-29).
+**Total: 391 tests, all passing** (verified 2026-07-30).
 
 ### By Crate
 
@@ -146,9 +146,9 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 | `uml-core` serde_roundtrip | 9 | External serde round-trip tests, including Actor, UseCase, Component, Node, and all Artifact draw modes |
 | `uml-core` diagram_geometry | 2 | `diagram/geometry.rs` — Point, Size, Rect construction and arithmetic |
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
-| `uml-io` XMI unit tests | 65 | Reader/writer parsing, common metadata compatibility, semantic round trips including diagram zoom and Component/Node/Artifact widgets, diagrams, relationships, and file helpers |
+| `uml-io` XMI unit tests | 68 | Reader/writer parsing, common metadata compatibility, collision-safe generated/preserved IDs, one-Class diagram save/reload, semantic round trips including diagram zoom and Component/Node/Artifact widgets, diagrams, relationships, and file helpers |
 | `uml-io` real corpus | 1 | Parse the available C++ XMI corpus without failure |
-| `apps/umbrello` tests | 116 | GUI behavior including project-first and multi-diagram flows, diagram/tool compatibility, clickable/reusable browser elements, selectable/editable relationships, one-command drag gestures, viewport navigation, semantic QA targets, MCP schemas/CLI integration, and synchronized PNG output |
+| `apps/umbrello` tests | 123 | GUI behavior including project-first and multi-diagram flows, diagram/tool compatibility, clickable/reusable browser elements, selectable/editable relationships, frame-level native pointer drag, multi-frame cumulative movement, no-op click, MCP gesture mode, viewport navigation, semantic QA targets, MCP schemas/CLI integration, and synchronized PNG output |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
 
 ### Test Commands
@@ -379,6 +379,18 @@ cargo test -p uml-core serde_roundtrip_model_element
 - Main implementation locations: `apps/umbrello/src/{app,canvas,tree,tool_palette,property_editor,menu,file_io}.rs`, `apps/umbrello/src/qa/control.rs`, and `crates/uml-core/src/undo/{commands,mod}.rs`
 - Diagram deletion/rename/tabs, element-vs-view deletion semantics, resize handles, context menus, advanced diagram authoring, and routing editors remain deferred
 
+### Persistence and Native Drag Regression Fixes
+
+- **391 tests** verified across the workspace
+- One reserved ID set covers preserved originals and all synthetic writer IDs; duplicate preserved IDs return structured `XmiWriteError::DuplicateOriginalId`
+- Minimal Class diagram save/reload is covered
+- Background deselection no longer overlaps node pointer ownership
+- Shared begin/update/commit drag state machine accumulates multi-frame screen deltas, commits one MoveNode, undo restores, and no-motion clicks are no-ops
+- Existing seven-tool MCP ui_drag has optional gesture mode for the shared flow
+- Main implementation locations: `crates/uml-io/src/xmi/writer.rs`, `apps/umbrello/src/{app,canvas,tests}.rs`, and `apps/umbrello/src/qa/{control,protocol,mcp}.rs`
+
+**Current limitation:** Already-corrupted external XMI files containing duplicate semantic defining IDs remain rejected; the fix prevents new writer output from creating them. Attribute/operation authoring remains absent: existing attributes/operations load, render, and show read-only, but creation/editing commands and UI are deferred.
+
 ---
 
 ## Architecture Decisions
@@ -402,6 +414,7 @@ cargo test -p uml-core serde_roundtrip_model_element
 | **Project-first authoring** | A new model receives and successfully writes its XMI path before diagrams or elements are authored; destructive flows proceed only after a confirmed save or discard |
 | **Central diagram/tool compatibility** | One pure matrix drives native, keyboard, helper, and MCP authoring gates; restrictions apply prospectively and never delete loaded legacy content |
 | **Semantic node/edge/browser selection** | `selected_element_id` identifies any `ModelElement`, including relationships; diagram views and browser rows select the same semantic object and property draft |
+| **Collision-aware XMI allocation** | Unique preserved originals are reserved before generation; wrapper/features/diagram synthetic IDs use the same allocator; reader duplicate rejection remains strict |
 
 ---
 
@@ -731,6 +744,7 @@ The XMI reader at `crates/uml-io/src/xmi/reader.rs` (~2416 lines) currently hand
 | **Property editor panel** | Implemented in M18 and extended in M24 with persistent documentation and atomic relationship kind/role/multiplicity/navigability drafts | ~~HIGH~~ **DONE** |
 | **Resize handles** | Drag corner/edge handles not implemented | **MEDIUM** — nodes fixed size (can be worked around) |
 | **Edge creation** | Click-and-drag to create relationships implemented in M19 | ~~HIGH~~ **DONE** |
+| **Node dragging** | Selected nodes support cumulative native primary-button dragging, one history command on release, no-op clicks do not dirty/history | **DONE** |
 | **Zoom controls** | Implemented in M22: wheel zoom, View menu ±5%, Fit, 100%, and 10–500% bounds | ~~MEDIUM~~ **DONE** |
 | **Pan/scroll** | Implemented in M22 via middle-button drag with transient per-diagram pan | ~~MEDIUM~~ **DONE** |
 | **Multiple diagram tabs** | Multiple diagrams can be created and switched through the diagram list; no tabbed interface | **MEDIUM** — list switching is usable, tabs remain deferred |
@@ -993,7 +1007,8 @@ Key architecture documents in `docs/` to read before implementing:
 | `designs/milestone_20.md` | Actor & UseCase domain types, XMI reader/writer, stick-figure rendering, tool palette | Adding new simple element types |
 | `designs/milestone_23_component_node_artifact.md` | Component, deployment Node, Artifact domain/XMI/rendering/MCP design | Extending structural/deployment element support |
 | `designs/milestone_24_usability_foundations.md` | Project-first workflow, supported diagram creation, tool compatibility, browser reuse, edge selection, relationship editing, and MCP QA | Extending native authoring or interaction behavior |
+| `designs/save_reload_and_native_drag_regressions.md` | XMI collision-safe allocation, native drag ownership fix, cumulative multi-frame drag state machine | Persistence and interaction regression work |
 
 ---
 
-*Last updated: 2026-07-29 · Umbrello-RS Milestone 24*
+*Last updated: 2026-07-30 · Umbrello-RS Milestone 24*
