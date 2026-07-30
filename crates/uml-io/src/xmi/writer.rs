@@ -2470,4 +2470,98 @@ mod tests {
         let errors = restored.validate_references();
         assert!(errors.is_empty(), "dangling references after round-trip: {:?}", errors);
     }
+
+    // ─── Root Package survival (RED/S2F1) ────────────────────────────
+
+    /// Regression (RED): when a user-authored root Package exists in the
+    /// model, `XmiWriter::find_root_model_id` selects it and
+    /// `write_model_wrapper` promotes it to the outer `<UML:Model>` while
+    /// excluding it from structural element emission (line 240
+    /// `filter(|&id| Some(id) != root)`).  S2's reader correctly makes the
+    /// outer `<UML:Model>` transparent, so the root Package is silently
+    /// lost — it is never written as a `<UML:Package>` element and never
+    /// recreated by the reader.
+    ///
+    /// This test proves the defect by constructing a model with a
+    /// user-authored Package (named "MyProject" to avoid the "UML Model"
+    /// heuristics), a Class child attached through repository containment,
+    /// and asserting the Package survives with correct identity, children,
+    /// and parent_index after a full write/read/resolve round-trip.
+    #[test]
+    fn semantic_root_package_survives_transparent_wrapper() {
+        let mut model = UmlModel::new();
+
+        // User-authored root Package (not "UML Model") with a recognizable
+        // original_xmi_id so we can verify identity survives.
+        let mut pkg = Package::new("MyProject");
+        pkg.base.original_xmi_id = Some("P1".into());
+        let pkg_id = pkg.base.id;
+        model.insert(ModelElement::Package(pkg));
+
+        // Class inside the root Package, attached through repository
+        // containment so both Package.children and parent_index reflect
+        // the parent–child relationship.
+        let cls = Class::new("MyClass");
+        let cls_id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+        model.add_to_package(pkg_id, cls_id).unwrap();
+
+        // Round-trip: write → read → resolve
+        let xml = write_to_string(&model);
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        // ── Regression: root Package must survive ────────────────────────
+        let pkg_count = restored
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Package(_)))
+            .count();
+        assert_eq!(
+            pkg_count, 1,
+            "Root Package 'MyProject' must survive round-trip; \
+             S2 silently loses it because the writer promotes it to \
+             the outer <UML:Model> and the reader makes the wrapper \
+             transparent",
+        );
+
+        // Package identity: name and original_xmi_id preserved
+        let (restored_pkg_id, restored_pkg) = restored
+            .iter()
+            .find(|(_, e)| e.name() == "MyProject")
+            .expect("Package 'MyProject' must exist after round-trip");
+        assert_eq!(
+            restored_pkg.base().original_xmi_id.as_deref(),
+            Some("P1"),
+            "original_xmi_id 'P1' must be preserved"
+        );
+
+        // Class must survive
+        let restored_cls = restored.iter().find(|(_, e)| e.name() == "MyClass");
+        assert!(restored_cls.is_some(), "Class 'MyClass' must survive round-trip");
+        let (restored_cls_id, _) = restored_cls.unwrap();
+
+        // Package.children must contain MyClass
+        if let ModelElement::Package(pkg) = restored.get(restored_pkg_id).unwrap() {
+            let child_ids: Vec<UmlId> = pkg.child_ids().collect();
+            assert!(
+                child_ids.contains(&restored_cls_id),
+                "MyProject.children must include MyClass; got: {:?}",
+                child_ids,
+            );
+        }
+
+        // parents_of(MyClass) must include MyProject
+        let parents = restored.parents_of(restored_cls_id).unwrap_or(&[]);
+        assert!(
+            parents.contains(&restored_pkg_id),
+            "MyClass.parents_of must include MyProject; got: {:?}",
+            parents,
+        );
+
+        // No dangling references
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
 }
