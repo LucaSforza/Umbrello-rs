@@ -2831,3 +2831,140 @@ fn qa_gesture_mode_uses_shared_behavior_and_commits_once() {
         "Legacy mode must also place node correctly"
     );
 }
+
+/// Press on a node, then supply three distinct movement frames, then
+/// release. Assert the node ends at the cumulative displacement from
+/// press origin (not the per-frame delta of the last frame only).
+/// Also assert exactly one undoable command and undo restoration.
+#[test]
+fn native_pointer_drag_accumulates_multiple_move_frames() {
+    let mut app = make_app_with_diagram();
+    app.current_file_path = Some(PathBuf::from("/tmp/accum_drag.xmi"));
+    let element = Class::new("AccumDrag");
+    let id = element.base.id;
+    app.model.insert(ModelElement::Class(element));
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(id, ViewNode::new(id, Rect::new(100.0, 100.0, 100.0, 60.0)));
+    app.active_diagram = Some(0);
+
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let screen_size = egui::vec2(1280.0, 1024.0);
+
+    // Frame 0: establish layout.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+    let canvas_origin = app.last_canvas_rect.unwrap().min;
+    let node_center = egui::pos2(canvas_origin.x + 150.0, canvas_origin.y + 130.0);
+
+    // Frame 1: click to select.
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: node_center,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: node_center,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+    assert_eq!(app.selected_element_id, Some(id));
+
+    let press_origin = node_center;
+
+    // Frame 2: press (no move yet).
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![egui::Event::PointerButton {
+                pos: press_origin,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    // Frame 3: move +20 x, +10 y.
+    let p1 = egui::pos2(press_origin.x + 20.0, press_origin.y + 10.0);
+    let _ = ctx.run(raw_with_screen(vec![egui::Event::PointerMoved(p1)], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+
+    // Frame 4: move another +20 x, +10 y (cumulative: +40, +20).
+    let p2 = egui::pos2(press_origin.x + 40.0, press_origin.y + 20.0);
+    let _ = ctx.run(raw_with_screen(vec![egui::Event::PointerMoved(p2)], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+
+    // Frame 5: move another +10 x, +5 y (cumulative: +50, +25).
+    let p3 = egui::pos2(press_origin.x + 50.0, press_origin.y + 25.0);
+    let _ = ctx.run(raw_with_screen(vec![egui::Event::PointerMoved(p3)], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+
+    // Verify preview is at cumulative displacement (not last-frame delta).
+    // At 100% zoom: cumulative screen delta (50, 25) → model delta (50, 25)
+    // Expected position: orig (100, 100) + (50, 25) = (150, 125)
+    assert_eq!(app.drag_node_id, Some(id), "drag_node_id must persist across move frames");
+    assert!(
+        app.drag_preview_pos
+            .is_some_and(|p| (p.x - 150.0).abs() < 0.01 && (p.y - 125.0).abs() < 0.01),
+        "Preview position must reflect cumulative (50, 25) displacement, not per-frame delta. \
+         Expected (150, 125), got {:?}",
+        app.drag_preview_pos
+    );
+
+    // Frame 6: release.
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![egui::Event::PointerButton {
+                pos: p3,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    let node = app.model.diagrams()[0].get_node(id).unwrap();
+    assert!(
+        (node.bounds.x() - 150.0).abs() < 0.01 && (node.bounds.y() - 125.0).abs() < 0.01,
+        "Cumulative 3-frame drag must place node at (150, 125), got ({}, {})",
+        node.bounds.x(),
+        node.bounds.y()
+    );
+    assert_eq!(
+        app.history.undo_depth(),
+        1,
+        "Exactly one undoable command after multi-frame drag"
+    );
+
+    // Undo restores original position.
+    app.undo_action().unwrap();
+    let node = app.model.diagrams()[0].get_node(id).unwrap();
+    assert!((node.bounds.x() - 100.0).abs() < 0.01 && (node.bounds.y() - 100.0).abs() < 0.01);
+}

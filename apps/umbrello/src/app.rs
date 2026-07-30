@@ -58,6 +58,10 @@ pub(crate) struct UmbrelloApp {
     pub(crate) drag_node_id: Option<uml_core::UmlId>,
     pub(crate) drag_start_pos: Option<egui::Pos2>,
     pub(crate) drag_preview_pos: Option<uml_core::Point>,
+    /// Accumulated screen-space displacement since drag begin, used to
+    /// compute cumulative model-position updates across multiple movement
+    /// frames (each ctx.run() resets pointer.delta but not this field).
+    pub(crate) drag_accum_screen_delta: egui::Vec2,
     pub(crate) status_message: String,
     /// REVIEW CONDITION C1: Track whether model was loaded from XMI.
     #[allow(dead_code)]
@@ -127,6 +131,7 @@ impl UmbrelloApp {
             drag_node_id: None,
             drag_start_pos: None,
             drag_preview_pos: None,
+            drag_accum_screen_delta: egui::Vec2::ZERO,
             status_message: msg,
             loaded_from_xmi: loaded,
             current_file_path: None,
@@ -232,6 +237,7 @@ impl UmbrelloApp {
         self.drag_node_id = None;
         self.drag_start_pos = None;
         self.drag_preview_pos = None;
+        self.drag_accum_screen_delta = egui::Vec2::ZERO;
     }
 
     pub(crate) fn clear_selection(&mut self) {
@@ -241,32 +247,78 @@ impl UmbrelloApp {
         self.relationship_draft = None;
     }
 
-    /// Execute a native-equivalent node gesture: set drag state, commit
-    /// the MoveNode command, then clear drag state.
+    /// Shared drag state machine — begin phase.
     ///
-    /// Used by both canvas drag handling and the MCP gesture mode so that
-    /// semantic `ui_drag` exercises the same begin/preview/release control
-    /// flow as native pointer interaction.
+    /// Sets drag_node_id and drag_start_pos to the original model position.
+    /// Caller must supply the original (pre-drag) model position so that
+    /// cumulative screen displacement can be correctly converted back to
+    /// model coordinates.
+    pub(crate) fn begin_node_drag(&mut self, node_id: UmlId, original_pos: uml_core::Point) {
+        self.drag_node_id = Some(node_id);
+        self.drag_start_pos = Some(egui::pos2(original_pos.x as f32, original_pos.y as f32));
+        self.drag_preview_pos = None;
+        self.drag_accum_screen_delta = egui::Vec2::ZERO;
+    }
+
+    /// Shared drag state machine — update phase.
+    ///
+    /// Sets the transient preview position in model coordinates.
+    /// Safe to call every frame during a drag; the last value before
+    /// commit_node_drag determines the final position.
+    pub(crate) fn update_node_drag(&mut self, model_position: uml_core::Point) {
+        self.drag_preview_pos = Some(model_position);
+    }
+
+    /// Shared drag state machine — commit phase.
+    ///
+    /// Executes a MoveNode command at the last preview position, then
+    /// clears all drag state. Returns an error if no drag was in progress.
+    /// Safe to call on release, including when the pointer did not move
+    /// (the MoveNode command uses the node's own position as fallback).
+    pub(crate) fn commit_node_drag(
+        &mut self,
+        diagram_id: uml_core::DiagramId,
+    ) -> Result<(), self::qa::protocol::QaError> {
+        let node_id = self
+            .drag_node_id
+            .take()
+            .ok_or(self::qa::protocol::QaError::UnavailableTarget("no active drag".into()))?;
+        let position = self.drag_preview_pos.take().unwrap_or_else(|| {
+            // Fallback: use node's current position (no movement occurred).
+            self.model
+                .get_diagram(diagram_id)
+                .and_then(|d| d.get_node(node_id))
+                .map(|n| uml_core::Point::new(n.bounds.x(), n.bounds.y()))
+                .unwrap_or(uml_core::Point::new(0.0, 0.0))
+        });
+        self.drag_start_pos = None;
+        self.drag_accum_screen_delta = egui::Vec2::ZERO;
+        let cmd = uml_core::commands::MoveNode::new(&self.model, diagram_id, node_id, position)
+            .map_err(|e| self::qa::protocol::QaError::Command(e.to_string()))?;
+        self.execute_command_result(Box::new(cmd))
+    }
+
+    /// Execute a native-equivalent node gesture: begin, update, commit
+    /// and clear using the shared helpers.
+    ///
+    /// Used by the MCP gesture mode so that semantic `ui_drag` exercises
+    /// the same control flow as native pointer interaction.
     pub(crate) fn execute_gesture_move(
         &mut self,
         diagram_id: uml_core::DiagramId,
         node_id: UmlId,
         destination: uml_core::Point,
     ) -> Result<(), self::qa::protocol::QaError> {
-        // Phase 1: Begin — set drag tracking state.
-        self.drag_node_id = Some(node_id);
-        self.drag_start_pos = Some(egui::pos2(destination.x as f32, destination.y as f32));
-        // Phase 2: Update — set preview position.
-        self.drag_preview_pos = Some(destination);
-        // Phase 3: Commit — execute MoveNode command.
-        let cmd = uml_core::commands::MoveNode::new(&self.model, diagram_id, node_id, destination)
-            .map_err(|e| self::qa::protocol::QaError::Command(e.to_string()))?;
-        self.execute_command_result(Box::new(cmd))?;
-        // Phase 4: Clear drag state.
-        self.drag_node_id = None;
-        self.drag_start_pos = None;
-        self.drag_preview_pos = None;
-        Ok(())
+        // Look up the original node position.
+        let original = self
+            .model
+            .get_diagram(diagram_id)
+            .and_then(|d| d.get_node(node_id))
+            .map(|n| uml_core::Point::new(n.bounds.x(), n.bounds.y()))
+            .ok_or(self::qa::protocol::QaError::UnavailableTarget(format!("node:{node_id}")))?;
+        self.begin_node_drag(node_id, original);
+        self.update_node_drag(destination);
+        self.commit_node_drag(diagram_id)
     }
 
     pub(crate) fn refresh_property_buffers(&mut self) {
@@ -812,6 +864,7 @@ impl eframe::App for UmbrelloApp {
                     self.drag_node_id = None;
                     self.drag_start_pos = None;
                     self.drag_preview_pos = None;
+                    self.drag_accum_screen_delta = egui::Vec2::ZERO;
                     self.status_message = "Node drag cancelled".into();
                 } else if self.selected_element_id.is_some() {
                     self.clear_selection();

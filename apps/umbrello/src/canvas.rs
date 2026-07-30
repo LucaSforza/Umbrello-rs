@@ -313,40 +313,37 @@ impl UmbrelloApp {
                     selection_handled = true;
                 }
 
-                // Drag update (while button is down, pointer has moved)
-                if hit && ptr_down {
+                // Drag begin (first frame where pointer is down on node)
+                if hit && ptr_down && !is_being_dragged {
                     selection_handled = true;
-                    if self.drag_node_id != Some(model_element_id) {
-                        self.drag_node_id = Some(model_element_id);
-                        self.drag_start_pos = Some(egui::pos2(orig_x as f32, orig_y as f32));
-                    }
-                    let screen_delta = ui.input(|i| i.pointer.delta());
-                    if screen_delta != egui::Vec2::ZERO {
-                        let new_pos = preview_node_position(
+                    self.begin_node_drag(model_element_id, Point::new(orig_x, orig_y));
+                }
+
+                // Drag update (must re-read drag_node_id here because
+                // begin_node_drag may have changed it in the same iteration).
+                //
+                // Accumulates per-frame pointer.delta() into
+                // drag_accum_screen_delta so that cumulative displacement is
+                // correct even across isolated ctx.run() calls (where
+                // press_origin is not carried over).
+                if self.drag_node_id == Some(model_element_id) && ptr_down {
+                    selection_handled = true;
+                    let frame_delta = ui.input(|i| i.pointer.delta());
+                    if frame_delta != egui::Vec2::ZERO {
+                        self.drag_accum_screen_delta += frame_delta;
+                        let model_pos = preview_node_position(
                             Point::new(orig_x, orig_y),
-                            screen_delta,
+                            self.drag_accum_screen_delta,
                             transform.scale,
                         );
-                        self.drag_preview_pos = Some(new_pos);
+                        self.update_node_drag(model_pos);
                     }
                 }
 
-                // Drag commit (button was just released while this node was
-                // the drag target, or has a pending preview).
-                if ptr_released && is_being_dragged {
-                    if self.drag_preview_pos.is_none() {
-                        let screen_delta = ui.input(|i| i.pointer.delta());
-                        self.drag_preview_pos = Some(preview_node_position(
-                            Point::new(orig_x, orig_y),
-                            screen_delta,
-                            transform.scale,
-                        ));
-                    }
-                    if let Some(position) = self.drag_preview_pos.take() {
-                        let _ = self.move_node_to(diagram_id, model_element_id, position);
-                    }
-                    self.drag_node_id = None;
-                    self.drag_start_pos = None;
+                // Drag commit (must re-read drag_node_id; also handles the
+                // case where begin+update+commit all happen in one frame).
+                if ptr_released && self.drag_node_id == Some(model_element_id) {
+                    let _ = self.commit_node_drag(diagram_id);
                 }
             }
             if ptr_clicked && !selection_handled {
