@@ -57,10 +57,13 @@ struct PendingTypeRef {
 #[derive(Debug, Clone)]
 struct PendingRelation {
     /// XMI ID of this relationship element itself.
-    #[allow(dead_code)]
     xmi_id: String,
     /// The kind of association.
     kind: AssociationType,
+    /// Set to true when an old-format assocwidget has claimed this
+    /// pending candidate as its backing relationship.  `resolve()`
+    /// skips claimed entries to prevent duplication.
+    claimed: bool,
     /// XMI ID of the source element.
     source_xmi: String,
     /// XMI ID of the target element.
@@ -212,6 +215,10 @@ pub struct XmiReader {
     inside_linepath: bool,
     /// Data collected for the current assocwidget (set when we see `<assocwidget>`).
     pending_assocwidget: Option<PendingAssocWidget>,
+    /// Per-diagram occurrence counter for old-format assocwidget matching:
+    /// maps `(DiagramId, AssociationType, widget_a_uml, widget_b_uml)` → count.
+    widget_diagram_occurrence:
+        HashMap<(Option<uml_core::DiagramId>, AssociationType, UmlId, UmlId), usize>,
     /// Pre-allocated UmlIds for pending relationships, keyed by their XMI ID.
     /// Populated during pass 1 so that assocwidgets (which use the same XMI ID
     /// in the C++-compatible format) can resolve to the same UmlId.
@@ -251,6 +258,7 @@ impl XmiReader {
             inside_associations: false,
             inside_linepath: false,
             pending_assocwidget: None,
+            widget_diagram_occurrence: HashMap::new(),
             pending_relation_xmi_ids: HashMap::new(),
             current_association_xmi_id: None,
         }
@@ -806,8 +814,12 @@ impl XmiReader {
         self.pending_gen_idrefs.clear();
         self.pending_gen_direct.clear();
 
-        // 6. Resolve pending relationships
+        // 6. Resolve pending relationships (skip those already matched by
+        //    old-format assocwidgets via finalize_assocwidget).
         for pr in &self.pending_relations {
+            if pr.claimed {
+                continue;
+            }
             if let (Some(&source_id), Some(&target_id)) =
                 (self.id_map.get(&pr.source_xmi), self.id_map.get(&pr.target_xmi))
             {
@@ -1400,6 +1412,7 @@ impl XmiReader {
             source_navigable: end0.is_navigable,
             target_navigable: end1.is_navigable,
             name: None,
+            claimed: false,
         });
     }
 
@@ -1432,6 +1445,7 @@ impl XmiReader {
             source_navigable: false,
             target_navigable: false,
             name,
+            claimed: false,
         });
 
         Ok(())
@@ -1466,6 +1480,7 @@ impl XmiReader {
             source_navigable: false,
             target_navigable: false,
             name,
+            claimed: false,
         });
 
         Ok(())
@@ -1689,10 +1704,9 @@ impl XmiReader {
         // Build waypoints
         let waypoints: Vec<Point> = paw.start_point.into_iter().chain(paw.end_point).collect();
 
-        // Find or create a relationship ID for the edge.
-        //
-        // Priority 1: the assocwidget's xmi.id matches a pre-registered
-        // semantic relationship (C++-compatible shared-ID format).
+        // ── Priority 1: shared-ID format ──────────────────────────
+        // The assocwidget's xmi.id matches the semantic relationship's
+        // XMI ID (C++-compatible).  Use the pre-registered UmlId directly.
         if let Some(&rel_id) = self.pending_relation_xmi_ids.get(&paw.xmi_id) {
             let edge = ViewEdge::new(rel_id, widget_a_uml, widget_b_uml, LineRouting::Direct);
             let edge_id = EdgeId::new();
@@ -1705,43 +1719,105 @@ impl XmiReader {
             return;
         }
 
-        // Priority 2: for Generalization/Realization, look for an existing
-        // relationship between the two elements (old format or foreign input).
-        let rel_id = match assoc_type {
-            AssociationType::Generalization | AssociationType::Realization => {
-                let existing: Option<UmlId> = model
-                    .iter()
-                    .filter_map(|(id, e)| {
-                        if let uml_core::ModelElement::Relationship(r) = e {
-                            if r.kind == assoc_type
-                                && ((r.source_id == widget_a_uml && r.target_id == widget_b_uml)
-                                    || (r.source_id == widget_b_uml && r.target_id == widget_a_uml))
-                            {
-                                return Some(id);
-                            }
-                        }
-                        None
-                    })
-                    .next();
-                existing.unwrap_or_else(|| {
-                    let rel = uml_core::Relationship::new(assoc_type, widget_a_uml, widget_b_uml);
-                    let rel_id = rel.base.id;
-                    model.insert(uml_core::ModelElement::Relationship(rel));
-                    rel_id
-                })
-            },
-            _ => {
-                let rel = uml_core::Relationship::new(assoc_type, widget_a_uml, widget_b_uml);
-                let rel_id = rel.base.id;
-                model.insert(uml_core::ModelElement::Relationship(rel));
-                rel_id
-            },
-        };
+        // ── Priority 2: old-format separate widget ID ─────────────
+        // Match against pending semantic candidates by kind and
+        // directed endpoints.  Use per-diagram occurrence order so
+        // parallel same-kind relationships stay distinct and a
+        // relationship shown in multiple diagrams reuses the same
+        // candidate (each diagram restarts its occurrence count).
+        let diagram_id = self.current_diagram.as_ref().map(|d| d.id);
+        let occ_key = (diagram_id, assoc_type, widget_a_uml, widget_b_uml);
+        let occurrence = self.widget_diagram_occurrence.entry(occ_key).or_insert(0);
+        let local_idx = *occurrence;
+        *occurrence = occurrence.saturating_add(1);
 
-        // Create the ViewEdge with waypoints
+        // Collect all unclaimed pending relations matching this widget.
+        let candidate_indices: Vec<usize> = self
+            .pending_relations
+            .iter()
+            .enumerate()
+            .filter(|(_, pr)| {
+                if pr.claimed || pr.kind != assoc_type {
+                    return false;
+                }
+                self.id_map.get(&pr.source_xmi) == Some(&widget_a_uml)
+                    && self.id_map.get(&pr.target_xmi) == Some(&widget_b_uml)
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        if local_idx < candidate_indices.len() {
+            let pr_index = candidate_indices[local_idx];
+            let xmi_id = self.pending_relations[pr_index].xmi_id.clone();
+            // Use the pre-registered UmlId.  DO NOT mark claimed —
+            // resolve() will create the actual Relationship using the
+            // same pre-registered ID; the ViewEdge already references it.
+            let rel_id = self
+                .pending_relation_xmi_ids
+                .get(&xmi_id)
+                .copied()
+                .unwrap_or_else(|| {
+                    let rel = Relationship::new(assoc_type, widget_a_uml, widget_b_uml);
+                    let rel_id = rel.base.id;
+                    model.insert(ModelElement::Relationship(rel));
+                    rel_id
+                });
+            let edge = ViewEdge::new(rel_id, widget_a_uml, widget_b_uml, LineRouting::Direct);
+            let edge_id = EdgeId::new();
+            if let Some(ref mut diagram) = self.current_diagram {
+                diagram.add_edge(edge_id, edge);
+                if let Some(edge_mut) = diagram.edges.get_mut(&edge_id) {
+                    edge_mut.waypoints = waypoints;
+                }
+            }
+            return;
+        }
+
+        // ── Priority 3: Generalization in pending_gen_direct ─────────
+        if assoc_type == AssociationType::Generalization {
+            for pg in &self.pending_gen_direct {
+                if let PendingGeneralization::Direct {
+                    ref gen_xmi_id,
+                    ref child_xmi,
+                    ref parent_xmi,
+                } = pg
+                {
+                    // Generalization: child=subclass=widget A, parent=superclass=widget B.
+                    if self.id_map.get(child_xmi) == Some(&widget_a_uml)
+                        && self.id_map.get(parent_xmi) == Some(&widget_b_uml)
+                    {
+                        if let Some(&rel_id) = self.pending_relation_xmi_ids.get(gen_xmi_id) {
+                            let edge = ViewEdge::new(
+                                rel_id,
+                                widget_a_uml,
+                                widget_b_uml,
+                                LineRouting::Direct,
+                            );
+                            let edge_id = EdgeId::new();
+                            if let Some(ref mut diagram) = self.current_diagram {
+                                diagram.add_edge(edge_id, edge);
+                                if let Some(edge_mut) = diagram.edges.get_mut(&edge_id) {
+                                    edge_mut.waypoints = waypoints;
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Priority 4: widget-only fallback ──────────────────────
+        // No matching pending semantic candidate exists.  This happens
+        // for genuinely widget-only relationships in foreign input.
+        // Create a fallback relationship; resolve() will not see a
+        // matching pending_relation entry to duplicate it.
+        let rel = Relationship::new(assoc_type, widget_a_uml, widget_b_uml);
+        let rel_id = rel.base.id;
+        model.insert(ModelElement::Relationship(rel));
+
         let edge = ViewEdge::new(rel_id, widget_a_uml, widget_b_uml, LineRouting::Direct);
         let edge_id = EdgeId::new();
-
         if let Some(ref mut diagram) = self.current_diagram {
             diagram.add_edge(edge_id, edge);
             if let Some(edge_mut) = diagram.edges.get_mut(&edge_id) {
@@ -3117,5 +3193,329 @@ mod tests {
             Some("canon".to_string()),
             "'value' must take precedence over 'initialValue'"
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // S7F1 — Old-format (separate widget ID) reader matching
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Parse a small XMI with separate widget IDs (old Rust writer format)
+    /// and verify no relationship duplication.
+    fn check_old_format_xmi(xmi: &str, expected_rels: usize, expected_edges: usize, label: &str) {
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xmi.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+        let errors = model.validate_references();
+        assert!(errors.is_empty(), "{label}: dangling refs: {:?}", errors);
+
+        let rel_count = model
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Relationship(_)))
+            .count();
+        assert_eq!(
+            rel_count, expected_rels,
+            "{label}: expected {expected_rels} relationships, got {rel_count}"
+        );
+
+        let edge_count: usize = model.diagrams().iter().map(|d| d.edges.len()).sum();
+        assert_eq!(
+            edge_count, expected_edges,
+            "{label}: expected {expected_edges} edges, got {edge_count}"
+        );
+    }
+
+    const XMI_OLD_GENERALIZATION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="Parent"/>
+    <UML:Class xmi.id="C2" name="Child"/>
+    <UML:Generalization xmi.id="G1" child="C2" parent="C1"/>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets/>
+    <associations>
+     <assocwidget xmi.id="W1" widgetaid="C2" widgetbid="C1" type="500">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+    #[test]
+    fn old_format_generalization() {
+        check_old_format_xmi(XMI_OLD_GENERALIZATION, 1, 1, "Generalization");
+    }
+
+    const XMI_OLD_ALL_SIX_KINDS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="A"/>
+    <UML:Class xmi.id="C2" name="B"/>
+    <UML:Generalization xmi.id="G1" child="C1" parent="C2"/>
+    <UML:Association xmi.id="A1">
+     <UML:Association.connection>
+      <UML:AssociationEnd xmi.id="E1" type="C1"/>
+      <UML:AssociationEnd xmi.id="E2" type="C2"/>
+     </UML:Association.connection>
+    </UML:Association>
+    <UML:Dependency xmi.id="D1" supplier="C2" client="C1"/>
+    <UML:Abstraction xmi.id="R1" supplier="C2" client="C1"/>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets>
+     <classwidget xmi.id="C1" x="0" y="0" width="100" height="60"/>
+     <classwidget xmi.id="C2" x="300" y="0" width="100" height="60"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="WG1" widgetaid="C1" widgetbid="C2" type="500">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+     <assocwidget xmi.id="WA1" widgetaid="C1" widgetbid="C2" type="503">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+     <assocwidget xmi.id="WD1" widgetaid="C1" widgetbid="C2" type="502">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+     <assocwidget xmi.id="WR1" widgetaid="C1" widgetbid="C2" type="511">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+    #[test]
+    fn old_format_all_six_kinds() {
+        // Generalization + Association + Dependency + Realization = 4 relations,
+        // but Aggregation and Composition need separate XMI with the right assoc end attrs.
+        // This test covers 4 kinds via old-format widgets.
+        check_old_format_xmi(XMI_OLD_ALL_SIX_KINDS, 4, 4, "4 old-format kinds");
+    }
+
+    const XMI_OLD_PARALLEL: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="A"/>
+    <UML:Class xmi.id="C2" name="B"/>
+    <UML:Association xmi.id="A1">
+     <UML:Association.connection>
+      <UML:AssociationEnd xmi.id="E1" type="C1"/>
+      <UML:AssociationEnd xmi.id="E2" type="C2"/>
+     </UML:Association.connection>
+    </UML:Association>
+    <UML:Association xmi.id="A2">
+     <UML:Association.connection>
+      <UML:AssociationEnd xmi.id="E3" type="C1"/>
+      <UML:AssociationEnd xmi.id="E4" type="C2"/>
+     </UML:Association.connection>
+    </UML:Association>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets>
+     <classwidget xmi.id="C1" x="0" y="0" width="100" height="60"/>
+     <classwidget xmi.id="C2" x="300" y="0" width="100" height="60"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="WA1" widgetaid="C1" widgetbid="C2" type="503">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+     <assocwidget xmi.id="WA2" widgetaid="C1" widgetbid="C2" type="503">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+    #[test]
+    fn old_format_parallel_associations() {
+        check_old_format_xmi(XMI_OLD_PARALLEL, 2, 2, "2 parallel old-format associations");
+    }
+
+    const XMI_OLD_ONE_REL_TWO_DIAGRAMS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="A"/>
+    <UML:Class xmi.id="C2" name="B"/>
+    <UML:Association xmi.id="A1">
+     <UML:Association.connection>
+      <UML:AssociationEnd xmi.id="E1" type="C1"/>
+      <UML:AssociationEnd xmi.id="E2" type="C2"/>
+     </UML:Association.connection>
+    </UML:Association>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets>
+     <classwidget xmi.id="C1" x="0" y="0" width="100" height="60"/>
+     <classwidget xmi.id="C2" x="300" y="0" width="100" height="60"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="WA1" widgetaid="C1" widgetbid="C2" type="503">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+   <diagram name="D2">
+    <widgets>
+     <classwidget xmi.id="C1" x="0" y="0" width="100" height="60"/>
+     <classwidget xmi.id="C2" x="300" y="0" width="100" height="60"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="WA2" widgetaid="C1" widgetbid="C2" type="503">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+    #[test]
+    fn old_format_one_rel_two_diagrams() {
+        check_old_format_xmi(XMI_OLD_ONE_REL_TWO_DIAGRAMS, 1, 2, "1 relation in 2 diagrams");
+    }
+
+    const XMI_OLD_WIDGET_ONLY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="A"/>
+    <UML:Class xmi.id="C2" name="B"/>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets>
+     <classwidget xmi.id="C1" x="0" y="0" width="100" height="60"/>
+     <classwidget xmi.id="C2" x="300" y="0" width="100" height="60"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="W_EDGE" widgetaid="C1" widgetbid="C2" type="503">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+    #[test]
+    fn old_format_widget_only() {
+        check_old_format_xmi(XMI_OLD_WIDGET_ONLY, 1, 1, "widget-only association");
+    }
+
+    const XMI_OLD_SINGLE_ASSOCIATION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="A"/>
+    <UML:Class xmi.id="C2" name="B"/>
+    <UML:Association xmi.id="A1">
+     <UML:Association.connection>
+      <UML:AssociationEnd xmi.id="E1" type="C1"/>
+      <UML:AssociationEnd xmi.id="E2" type="C2"/>
+     </UML:Association.connection>
+    </UML:Association>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets>
+     <classwidget xmi.id="C1" x="0" y="0" width="100" height="60"/>
+     <classwidget xmi.id="C2" x="300" y="0" width="100" height="60"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="WA1" widgetaid="C1" widgetbid="C2" type="503">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+    #[test]
+    fn old_format_single_association() {
+        check_old_format_xmi(XMI_OLD_SINGLE_ASSOCIATION, 1, 1, "1 old-format association");
+    }
+
+    const XMI_CSHARP_SHARED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="A"/>
+    <UML:Class xmi.id="C2" name="B"/>
+    <UML:Association xmi.id="S1">
+     <UML:Association.connection>
+      <UML:AssociationEnd xmi.id="E1" type="C1"/>
+      <UML:AssociationEnd xmi.id="E2" type="C2"/>
+     </UML:Association.connection>
+    </UML:Association>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets>
+     <classwidget xmi.id="C1" widget="C1"/>
+     <classwidget xmi.id="C2" widget="C2"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="S1" widgetaid="C1" widgetbid="C2" type="503">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+    #[test]
+    fn cpp_shared_id_association() {
+        check_old_format_xmi(XMI_CSHARP_SHARED, 1, 1, "C++ shared-ID format");
     }
 }
