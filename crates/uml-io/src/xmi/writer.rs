@@ -204,24 +204,50 @@ impl<W: Write> XmiWriter<W> {
         // Find a suitable root package for the UML:Model wrapper
         let root = self.find_root_model_id(model);
 
-        // Collect all elements that should be written as top-level children
-        // (anything that is not the root Model wrapper)
-        let top_level_ids: Vec<UmlId> = model
+        // Determine which structural elements are direct children of the
+        // UML:Model wrapper (canonical containment ownership).
+        //
+        // An element is wrapper-level iff:
+        //   • it has no package parent (unparented), OR
+        //   • its canonical parent is the selected root package.
+        //
+        // Elements whose canonical parent is a non-root Package are nested
+        // — they will be written by their parent's recursive
+        // `write_package` call, NOT at the wrapper level.
+        //
+        // For elements with multiple parents (repository supports this),
+        // canonical ownership follows a deterministic rule: if the root
+        // package is among the parents, root wins; otherwise the first
+        // parent in insertion order is canonical.
+        let is_wrapper_level = |id: UmlId| -> bool {
+            let parents = model.parents_of(id).unwrap_or(&[]);
+            if parents.is_empty() {
+                return true; // unparented → direct UML:Model child
+            }
+            if let Some(root_id) = root {
+                parents.contains(&root_id) // child of root → wrapper-level
+            } else {
+                // No root package — every element must be wrapper-level
+                // because there is no parent package to nest them under.
+                true
+            }
+        };
+
+        // Wrapper-level structural elements (non-relationships)
+        let struct_ids: Vec<UmlId> = model
             .iter()
             .map(|(id, _)| id)
             .filter(|&id| Some(id) != root)
+            .filter(|&id| !matches!(model.get(id), Some(ModelElement::Relationship(_))))
+            .filter(|&id| is_wrapper_level(id))
             .collect();
 
-        // Separate structural elements from relationships
-        let struct_ids: Vec<UmlId> = top_level_ids
+        // All relationships are always written at wrapper level.
+        let rel_ids: Vec<UmlId> = model
             .iter()
-            .copied()
-            .filter(|id| !matches!(model.get(*id), Some(ModelElement::Relationship(_))))
-            .collect();
-        let rel_ids: Vec<UmlId> = top_level_ids
-            .iter()
-            .copied()
-            .filter(|id| matches!(model.get(*id), Some(ModelElement::Relationship(_))))
+            .map(|(id, _)| id)
+            .filter(|&id| Some(id) != root)
+            .filter(|&id| matches!(model.get(id), Some(ModelElement::Relationship(_))))
             .collect();
 
         let model_xmi = root
@@ -1699,5 +1725,72 @@ mod tests {
             Err(other) => panic!("expected DuplicateOriginalId, got: {other}"),
             Ok(()) => panic!("expected DuplicateOriginalId error, write succeeded"),
         }
+    }
+
+    // ─── Nested package emission (G3 regression tests) ───────────────
+
+    /// G3 regression: a Class inside a nested Package must be emitted
+    /// exactly once — as a child of that Package, not also at the wrapper
+    /// level.  The current `write_model_wrapper` puts every element
+    /// except the root into `struct_ids`; `write_package` then recursively
+    /// writes the nested Class, and the wrapper loop writes it again with
+    /// the same xmi.id, causing `DuplicateId` on reload.
+    ///
+    /// This is a RED TDD test showing the failure.
+    #[test]
+    fn nested_package_definitions_are_emitted_once() {
+        let mut model = UmlModel::new();
+
+        // Root Package (becomes UML:Model wrapper)
+        let root_pkg = Package::new("UML Model");
+        let root_id = root_pkg.base.id;
+        model.insert(ModelElement::Package(root_pkg));
+
+        // Nested Package P inside root
+        let pkg_p = Package::new("P");
+        let pkg_p_id = pkg_p.base.id;
+        model.insert(ModelElement::Package(pkg_p));
+        model.add_to_package(root_id, pkg_p_id).unwrap();
+
+        // Class C inside P
+        let cls = Class::new("C");
+        let cls_id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+        model.add_to_package(pkg_p_id, cls_id).unwrap();
+
+        let xml = write_to_string(&model);
+
+        // Class C must be defined exactly once (no wrapper-level double write).
+        let c_count = xml.matches("name=\"C\"").count();
+        assert_eq!(
+            c_count, 1,
+            "Class C must appear exactly once, got {c_count}. \
+             Current bug: C is written by write_package(P) AND again from struct_ids."
+        );
+
+        // Round-trip — must NOT fail with DuplicateId.
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        // All three semantic elements (UML:Model wrapper → Package,
+        // Package P, Class C) must survive.
+        assert!(
+            restored.iter().any(|(_, e)| e.name() == "P"),
+            "Package P must survive round-trip"
+        );
+        assert!(restored.iter().any(|(_, e)| e.name() == "C"), "Class C must survive round-trip");
+
+        // At least 2 packages: UML Model (wrapper) + P
+        let pkg_count = restored
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Package(_)))
+            .count();
+        assert!(pkg_count >= 2, "should have at least 2 packages after round-trip");
+
+        // No dangling references.
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling references after round-trip: {:?}", errors);
     }
 }
