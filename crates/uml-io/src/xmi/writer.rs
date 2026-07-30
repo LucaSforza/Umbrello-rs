@@ -200,68 +200,44 @@ impl<W: Write> XmiWriter<W> {
     // ─── Model writing ─────────────────────────────────────────────────
 
     /// Write `<UML:Model>` wrapper and all elements inside.
+    ///
+    /// The outer `<UML:Model>` always uses a collision-safe synthetic XMI ID
+    /// and the fixed name `"UML Model"`.  It is transparent on read (see S2
+    /// reader fix), so it must never reuse a semantic element's XMI ID or
+    /// name — doing so would silently lose a user-authored root Package when
+    /// the reader discards the wrapper.
+    ///
+    /// Wrapper-level content: only unparented structural elements
+    /// (including root Packages).  Children of any Package are written
+    /// recursively by their deterministic canonical owner.  All
+    /// relationships are wrapper-level exactly once.
     fn write_model_wrapper(&mut self, model: &UmlModel) -> Result<(), XmiWriteError> {
-        // Find a suitable root package for the UML:Model wrapper
-        let root = self.find_root_model_id(model);
+        // Always use a synthetic, collision-free ID for the wrapper.
+        let model_xmi = self.gen_sub_id();
 
-        // Determine which structural elements are direct children of the
-        // UML:Model wrapper (canonical containment ownership).
-        //
-        // An element is wrapper-level iff:
-        //   • it has no package parent (unparented), OR
-        //   • its canonical parent is the selected root package.
-        //
-        // Elements whose canonical parent is a non-root Package are nested
-        // — they will be written by their parent's recursive
-        // `write_package` call, NOT at the wrapper level.
-        //
-        // For elements with multiple parents (repository supports this),
-        // canonical ownership follows a deterministic rule: if the root
-        // package is among the parents, root wins; otherwise the first
-        // parent in insertion order is canonical.
-        let is_wrapper_level = |id: UmlId| -> bool {
-            let parents = model.parents_of(id).unwrap_or(&[]);
-            if parents.is_empty() {
-                return true; // unparented → direct UML:Model child
-            }
-            if let Some(root_id) = root {
-                parents.contains(&root_id) // child of root → wrapper-level
-            } else {
-                // No root package — every element must be wrapper-level
-                // because there is no parent package to nest them under.
-                true
-            }
-        };
-
-        // Wrapper-level structural elements (non-relationships)
+        // Wrapper-level structural elements: only unparented elements.
+        // Root Packages are emitted as nested <UML:Package> definitions.
         let struct_ids: Vec<UmlId> = model
             .iter()
             .map(|(id, _)| id)
-            .filter(|&id| Some(id) != root)
             .filter(|&id| !matches!(model.get(id), Some(ModelElement::Relationship(_))))
-            .filter(|&id| is_wrapper_level(id))
+            .filter(|&id| {
+                let parents = model.parents_of(id).unwrap_or(&[]);
+                parents.is_empty() // unparented → wrapper-level
+            })
             .collect();
 
         // All relationships are always written at wrapper level.
         let rel_ids: Vec<UmlId> = model
             .iter()
             .map(|(id, _)| id)
-            .filter(|&id| Some(id) != root)
             .filter(|&id| matches!(model.get(id), Some(ModelElement::Relationship(_))))
             .collect();
 
-        let model_xmi = root
-            .map(|id| self.lookup_xmi_id(id))
-            .unwrap_or_else(|| self.gen_sub_id());
-        let model_name = root
-            .and_then(|id| model.get(id))
-            .map(|e| e.name().to_string())
-            .unwrap_or_else(|| "UML Model".to_string());
-
-        // Write <UML:Model ...>
+        // Write <UML:Model xmi.id="..." name="UML Model" ...>
         let mut model_tag = BytesStart::new("UML:Model");
         model_tag.push_attribute(("xmi.id", model_xmi.as_str()));
-        model_tag.push_attribute(("name", model_name.as_str()));
+        model_tag.push_attribute(("name", "UML Model"));
         model_tag.push_attribute(("isSpecification", "false"));
         model_tag.push_attribute(("isAbstract", "false"));
         model_tag.push_attribute(("isLeaf", "false"));
@@ -273,10 +249,10 @@ impl<W: Write> XmiWriter<W> {
             self.writer
                 .write_event(Event::Start(BytesStart::new("UML:Namespace.ownedElement")))?;
 
-            // Write structural elements
+            // Write structural elements (unparented, including root Packages).
             for id in &struct_ids {
                 if let Some(elem) = model.get(*id) {
-                    self.write_element(elem, model, root)?;
+                    self.write_element(elem, model)?;
                 }
             }
 
@@ -297,51 +273,19 @@ impl<W: Write> XmiWriter<W> {
         Ok(())
     }
 
-    /// Find a root package ID to use as the UML:Model wrapper.
-    /// Returns `None` if no suitable package exists (e.g., empty model).
-    fn find_root_model_id(&self, model: &UmlModel) -> Option<UmlId> {
-        // Prefer a Package named "UML Model" — this is the typical root.
-        for (id, elem) in model.iter() {
-            if elem.name() == "UML Model" && matches!(elem, ModelElement::Package(_)) {
-                return Some(id);
-            }
-        }
-        // Otherwise use the first Package element.
-        for (id, elem) in model.iter() {
-            if matches!(elem, ModelElement::Package(_)) {
-                return Some(id);
-            }
-        }
-        None
-    }
-
     /// Is `package_id` the deterministic canonical owner of `child_id`?
     ///
     /// An element with multiple package parents must be emitted by exactly
-    /// one parent to avoid duplicate defining xmi.id values.  This function
-    /// implements the canonical-choice rule:
-    ///
-    /// 1. If `child_id` has no package parent → unparented (wrapper-level;
-    ///    not owned by any package).
-    /// 2. If `root` is among the parents → root is canonical.
-    /// 3. Otherwise the first parent in repository insertion order is
-    ///    canonical.
-    fn is_canonical_owner(
-        model: &UmlModel,
-        root: Option<UmlId>,
-        package_id: UmlId,
-        child_id: UmlId,
-    ) -> bool {
+    /// one parent to avoid duplicate defining xmi.id values.  The canonical
+    /// choice is the first parent in repository insertion order (the
+    /// earliest `add_to_package` call).  Unparented elements are not owned
+    /// by any package (they are written at wrapper level).
+    fn is_canonical_owner(model: &UmlModel, package_id: UmlId, child_id: UmlId) -> bool {
         let parents = model.parents_of(child_id).unwrap_or(&[]);
         if parents.is_empty() {
             return false; // unparented — written at wrapper level
         }
-        if let Some(root_id) = root {
-            if parents.contains(&root_id) {
-                return package_id == root_id; // root wins when present
-            }
-        }
-        // No root parent — the first parent in deterministic order wins
+        // The first parent in deterministic order is canonical.
         parents[0] == package_id
     }
 
@@ -352,10 +296,9 @@ impl<W: Write> XmiWriter<W> {
         &mut self,
         elem: &ModelElement,
         model: &UmlModel,
-        root: Option<UmlId>,
     ) -> Result<(), XmiWriteError> {
         match elem {
-            ModelElement::Package(pkg) => self.write_package(pkg, model, root),
+            ModelElement::Package(pkg) => self.write_package(pkg, model),
             ModelElement::Class(cls) => self.write_class(elem, &cls.base, &cls.classifier, model),
             ModelElement::Interface(iface) => {
                 self.write_class(elem, &iface.base, &iface.classifier, model)
@@ -458,7 +401,6 @@ impl<W: Write> XmiWriter<W> {
         &mut self,
         pkg: &uml_core::Package,
         model: &UmlModel,
-        root: Option<UmlId>,
     ) -> Result<(), XmiWriteError> {
         let xmi_id = self.lookup_xmi_id(pkg.base.id);
         let mut tag = BytesStart::new("UML:Package");
@@ -494,11 +436,11 @@ impl<W: Write> XmiWriter<W> {
             for child_id in child_ids {
                 // Skip children whose canonical owner is not this package
                 // (e.g. they belong to the root package or another sibling).
-                if !Self::is_canonical_owner(model, root, pkg.base.id, child_id) {
+                if !Self::is_canonical_owner(model, pkg.base.id, child_id) {
                     continue;
                 }
                 if let Some(child) = model.get(child_id) {
-                    self.write_element(child, model, root)?;
+                    self.write_element(child, model)?;
                 }
             }
             self.writer
@@ -1832,14 +1774,17 @@ mod tests {
         );
         assert!(restored.iter().any(|(_, e)| e.name() == "C"), "Class C must survive round-trip");
 
-        // Exactly 1 Package: the inner Package P.  The outer
-        // UML:Model wrapper is transparent and no longer creates a
-        // synthetic semantic Package.
+        // Two Packages: the formerly-wrapper root "UML Model" is now
+        // emitted as a semantic <UML:Package> element, and Package P
+        // is its child — both survive the transparent wrapper.
         let pkg_count = restored
             .iter()
             .filter(|(_, e)| matches!(e, ModelElement::Package(_)))
             .count();
-        assert_eq!(pkg_count, 1, "exactly 1 Package (P) after round-trip, not {pkg_count}");
+        assert!(
+            pkg_count >= 2,
+            "at least 2 Packages (UML Model + P) after round-trip, got {pkg_count}"
+        );
 
         // Package membership: P must contain C (reader now preserves
         // containment via parent_stack).
@@ -2473,20 +2418,12 @@ mod tests {
 
     // ─── Root Package survival (RED/S2F1) ────────────────────────────
 
-    /// Regression (RED): when a user-authored root Package exists in the
-    /// model, `XmiWriter::find_root_model_id` selects it and
-    /// `write_model_wrapper` promotes it to the outer `<UML:Model>` while
-    /// excluding it from structural element emission (line 240
-    /// `filter(|&id| Some(id) != root)`).  S2's reader correctly makes the
-    /// outer `<UML:Model>` transparent, so the root Package is silently
-    /// lost — it is never written as a `<UML:Package>` element and never
-    /// recreated by the reader.
-    ///
-    /// This test proves the defect by constructing a model with a
-    /// user-authored Package (named "MyProject" to avoid the "UML Model"
-    /// heuristics), a Class child attached through repository containment,
-    /// and asserting the Package survives with correct identity, children,
-    /// and parent_index after a full write/read/resolve round-trip.
+    /// A user-authored root Package (named `"MyProject"`, not `"UML Model"`)
+    /// with an `original_xmi_id` survives a full write/read/resolve
+    /// round-trip: the writer emits it as a nested `<UML:Package>` inside
+    /// a transparent `UML:Model` wrapper, and the reader preserves every
+    /// semantic Package including its identity, children, and
+    /// `parent_index` containment.
     #[test]
     fn semantic_root_package_survives_transparent_wrapper() {
         let mut model = UmlModel::new();
@@ -2518,13 +2455,7 @@ mod tests {
             .iter()
             .filter(|(_, e)| matches!(e, ModelElement::Package(_)))
             .count();
-        assert_eq!(
-            pkg_count, 1,
-            "Root Package 'MyProject' must survive round-trip; \
-             S2 silently loses it because the writer promotes it to \
-             the outer <UML:Model> and the reader makes the wrapper \
-             transparent",
-        );
+        assert_eq!(pkg_count, 1, "Root Package 'MyProject' must survive round-trip",);
 
         // Package identity: name and original_xmi_id preserved
         let (restored_pkg_id, restored_pkg) = restored
