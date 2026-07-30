@@ -2968,3 +2968,112 @@ fn native_pointer_drag_accumulates_multiple_move_frames() {
     let node = app.model.diagrams()[0].get_node(id).unwrap();
     assert!((node.bounds.x() - 100.0).abs() < 0.01 && (node.bounds.y() - 100.0).abs() < 0.01);
 }
+
+/// Press on a selected node, then release at the same pointer position
+/// in a later frame without any intervening movement. Must select the
+/// node (via the earlier click) while preserving exact bounds, clean
+/// dirty state, undo_depth=0, and cleared drag state.
+#[test]
+fn native_pointer_click_without_motion_creates_no_move() {
+    let mut app = make_app_with_diagram();
+    app.current_file_path = Some(PathBuf::from("/tmp/click_nomove.xmi"));
+    let element = Class::new("ClickNoMove");
+    let id = element.base.id;
+    app.model.insert(ModelElement::Class(element));
+    let diagram_id = app.model.diagrams()[0].id;
+    let orig = Point::new(100.0, 100.0);
+    app.model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(id, ViewNode::new(id, Rect::new(orig.x, orig.y, 100.0, 60.0)));
+    app.active_diagram = Some(0);
+
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let screen_size = egui::vec2(1280.0, 1024.0);
+
+    // Frame 0: establish layout.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+    let canvas_origin = app.last_canvas_rect.unwrap().min;
+    let node_center = egui::pos2(canvas_origin.x + 150.0, canvas_origin.y + 130.0);
+
+    // Frame 1: click to select the node (press + release in one frame).
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: node_center,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: node_center,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    assert_eq!(app.selected_element_id, Some(id), "Click must select node");
+    assert!(!app.is_dirty, "Selection must not dirty the model");
+    assert_eq!(app.history.undo_depth(), 0, "Selection must not create history");
+    assert!(app.drag_node_id.is_none(), "Drag state must be clear after click");
+
+    // Frame 2: press on the node (no release yet).
+    //   begin_node_drag fires, setting drag_node_id.
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![egui::Event::PointerButton {
+                pos: node_center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    // Frame 3: release at the same position (no movement).
+    //   commit_node_drag fires, should be a no-op.
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![egui::Event::PointerButton {
+                pos: node_center,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    // Must still be selected.
+    assert_eq!(app.selected_element_id, Some(id), "Node must remain selected");
+    // Bounds unchanged.
+    let node = app.model.diagrams()[0].get_node(id).unwrap();
+    assert!((node.bounds.x() - orig.x).abs() < 0.01, "X must be unchanged");
+    assert!((node.bounds.y() - orig.y).abs() < 0.01, "Y must be unchanged");
+    // No history entry created.
+    assert!(!app.is_dirty, "No-motion click must not dirty the model");
+    assert_eq!(app.history.undo_depth(), 0, "No-motion click must not create history");
+    // Drag state cleared.
+    assert!(app.drag_node_id.is_none(), "drag_node_id must be cleared after release");
+    assert!(app.drag_preview_pos.is_none(), "drag_preview_pos must be cleared");
+    assert!(app.drag_start_pos.is_none(), "drag_start_pos must be cleared");
+    assert_eq!(app.drag_accum_screen_delta, egui::Vec2::ZERO, "accum delta must be zero");
+}

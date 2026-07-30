@@ -271,10 +271,10 @@ impl UmbrelloApp {
 
     /// Shared drag state machine — commit phase.
     ///
-    /// Executes a MoveNode command at the last preview position, then
-    /// clears all drag state. Returns an error if no drag was in progress.
-    /// Safe to call on release, including when the pointer did not move
-    /// (the MoveNode command uses the node's own position as fallback).
+    /// Clears all drag state first, then conditionally executes a MoveNode.
+    /// If no movement occurred (no preview was set, or preview equals the
+    /// original position), this is a successful no-op — no history entry
+    /// is created and the model stays clean.
     pub(crate) fn commit_node_drag(
         &mut self,
         diagram_id: uml_core::DiagramId,
@@ -283,16 +283,27 @@ impl UmbrelloApp {
             .drag_node_id
             .take()
             .ok_or(self::qa::protocol::QaError::UnavailableTarget("no active drag".into()))?;
-        let position = self.drag_preview_pos.take().unwrap_or_else(|| {
-            // Fallback: use node's current position (no movement occurred).
-            self.model
-                .get_diagram(diagram_id)
-                .and_then(|d| d.get_node(node_id))
-                .map(|n| uml_core::Point::new(n.bounds.x(), n.bounds.y()))
-                .unwrap_or(uml_core::Point::new(0.0, 0.0))
-        });
+        // Original model position stored by begin_node_drag.
+        let original = self
+            .drag_start_pos
+            .map(|p| uml_core::Point::new(p.x as f64, p.y as f64));
+        let position = self.drag_preview_pos.take();
+        // Clear all drag state.
         self.drag_start_pos = None;
         self.drag_accum_screen_delta = egui::Vec2::ZERO;
+
+        // No preview → no movement → no-op.
+        let Some(position) = position else {
+            return Ok(());
+        };
+
+        // Preview matches original → no meaningful movement → no-op.
+        if let Some(orig) = original {
+            if (position.x - orig.x).abs() < 0.001 && (position.y - orig.y).abs() < 0.001 {
+                return Ok(());
+            }
+        }
+
         let cmd = uml_core::commands::MoveNode::new(&self.model, diagram_id, node_id, position)
             .map_err(|e| self::qa::protocol::QaError::Command(e.to_string()))?;
         self.execute_command_result(Box::new(cmd))
