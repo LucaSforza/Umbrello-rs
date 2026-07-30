@@ -241,6 +241,34 @@ impl UmbrelloApp {
         self.relationship_draft = None;
     }
 
+    /// Execute a native-equivalent node gesture: set drag state, commit
+    /// the MoveNode command, then clear drag state.
+    ///
+    /// Used by both canvas drag handling and the MCP gesture mode so that
+    /// semantic `ui_drag` exercises the same begin/preview/release control
+    /// flow as native pointer interaction.
+    pub(crate) fn execute_gesture_move(
+        &mut self,
+        diagram_id: uml_core::DiagramId,
+        node_id: UmlId,
+        destination: uml_core::Point,
+    ) -> Result<(), self::qa::protocol::QaError> {
+        // Phase 1: Begin — set drag tracking state.
+        self.drag_node_id = Some(node_id);
+        self.drag_start_pos = Some(egui::pos2(destination.x as f32, destination.y as f32));
+        // Phase 2: Update — set preview position.
+        self.drag_preview_pos = Some(destination);
+        // Phase 3: Commit — execute MoveNode command.
+        let cmd = uml_core::commands::MoveNode::new(&self.model, diagram_id, node_id, destination)
+            .map_err(|e| self::qa::protocol::QaError::Command(e.to_string()))?;
+        self.execute_command_result(Box::new(cmd))?;
+        // Phase 4: Clear drag state.
+        self.drag_node_id = None;
+        self.drag_start_pos = None;
+        self.drag_preview_pos = None;
+        Ok(())
+    }
+
     pub(crate) fn refresh_property_buffers(&mut self) {
         let Some(id) = self.selected_element_id else {
             self.name_edit_buffer.clear();

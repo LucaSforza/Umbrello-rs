@@ -52,6 +52,11 @@ pub(crate) enum QaRequest {
         /// a screen-space pan delta `(dx, dy)`, not an absolute pointer point.
         position: Option<(f64, f64)>,
         to_target: Option<String>,
+        /// When `Some(true)`, the drag uses a native-equivalent gesture
+        /// simulation (begin → preview → commit) instead of directly calling
+        /// move_node_to. This exercises the same control flow as native pointer
+        /// drag. Defaults to `false` / `None` for legacy direct move.
+        gesture: Option<bool>,
     },
     Sync {
         after_revision: u64,

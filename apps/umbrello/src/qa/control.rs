@@ -482,13 +482,14 @@ impl UmbrelloApp {
             QaRequest::Drag {
                 position,
                 to_target,
+                gesture,
             } => {
                 let target_id = self
                     .selected_qa_target
                     .clone()
                     .ok_or(QaError::UnavailableTarget("no selected QA target".into()))?;
                 self.require_selected(&target_id)?;
-                self.qa_drag(&target_id, position, to_target)?;
+                self.qa_drag(&target_id, position, to_target, gesture)?;
                 ctx.request_repaint();
                 Ok(QaResponse::Accepted(self.qa_snapshot()))
             },
@@ -823,6 +824,7 @@ impl UmbrelloApp {
         id: &str,
         position: Option<(f64, f64)>,
         to_target: Option<String>,
+        gesture: Option<bool>,
     ) -> Result<(), QaError> {
         self.require_selected(id)?;
         if id == "canvas" {
@@ -882,7 +884,14 @@ impl UmbrelloApp {
             .and_then(|i| self.model.diagrams().get(i))
             .ok_or(QaError::NotReady)?
             .id;
-        self.move_node_to(diagram, source, uml_core::Point::new(x, y))
+        // When gesture mode is enabled, use the shared gesture simulation that
+        // exercises the begin → preview → commit control flow instead of
+        // directly calling move_node_to.
+        if gesture.unwrap_or(false) {
+            self.execute_gesture_move(diagram, source, uml_core::Point::new(x, y))
+        } else {
+            self.move_node_to(diagram, source, uml_core::Point::new(x, y))
+        }
     }
 
     pub(crate) fn move_node_to(

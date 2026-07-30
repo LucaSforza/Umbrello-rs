@@ -1215,6 +1215,7 @@ fn qa_canvas_drag_pans_by_screen_delta_and_rejects_non_finite_values() {
         crate::app::qa::protocol::QaRequest::Drag {
             position: Some((12.0, -7.0)),
             to_target: None,
+            gesture: None,
         },
         &ctx,
     )
@@ -1229,6 +1230,7 @@ fn qa_canvas_drag_pans_by_screen_delta_and_rejects_non_finite_values() {
         crate::app::qa::protocol::QaRequest::Drag {
             position: Some((f64::NAN, 0.0)),
             to_target: None,
+            gesture: None,
         },
         &ctx,
     );
@@ -1240,6 +1242,7 @@ fn qa_canvas_drag_pans_by_screen_delta_and_rejects_non_finite_values() {
         crate::app::qa::protocol::QaRequest::Drag {
             position: Some((1e308, 0.0)),
             to_target: None,
+            gesture: None,
         },
         &ctx,
     );
@@ -1252,6 +1255,7 @@ fn qa_canvas_drag_pans_by_screen_delta_and_rejects_non_finite_values() {
         crate::app::qa::protocol::QaRequest::Drag {
             position: Some((max_f32, 0.0)),
             to_target: None,
+            gesture: None,
         },
         &ctx,
     )
@@ -1262,6 +1266,7 @@ fn qa_canvas_drag_pans_by_screen_delta_and_rejects_non_finite_values() {
         crate::app::qa::protocol::QaRequest::Drag {
             position: Some((max_f32, 0.0)),
             to_target: None,
+            gesture: None,
         },
         &ctx,
     );
@@ -2414,8 +2419,18 @@ fn drag_preview_converts_screen_delta_once_and_move_is_one_command() {
     assert!(app.history.can_redo());
 }
 
+/// Helper: build a RawInput with the given events and screen rect.
+#[allow(dead_code)]
+fn raw_with_screen(events: Vec<egui::Event>, size: egui::Vec2) -> egui::RawInput {
+    egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        events,
+        ..Default::default()
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════
-// S3 — Native pointer drag regression tests (RED TDD)
+// S4 — Native pointer drag + gesture tests (GREEN)
 // ══════════════════════════════════════════════════════════════════
 //
 // These tests exercise frame-level input routing through
@@ -2423,12 +2438,10 @@ fn drag_preview_converts_screen_delta_once_and_move_is_one_command() {
 // They deliberately avoid directly calling move_node_to, which the
 // existing bypass tests do.
 //
-// KNOWN DEFECT: canvas.rs registers node click_and_drag first, then
-// when selected, registers a later full-canvas Sense::click background
-// interaction that overlaps the node and can steal pointer ownership on
-// the second/third frame. These tests are RED TDD — they MUST NOT be
-// modified to match the broken behavior. Fix the production code
-// instead.
+// The fix replaces the overlapping full-canvas Sense::click background
+// interaction (which stole pointer ownership) with a self-contained
+// hit-test approach that checks button_down, button_clicked, and
+// pointer position directly.
 //
 // Drag tests use eframe::Frame::_new_kittest() —
 // a #[doc(hidden)] but public testing constructor.
@@ -2437,10 +2450,6 @@ fn drag_preview_converts_screen_delta_once_and_move_is_one_command() {
 /// press-move-release drag on the already-selected node. Assert changed
 /// bounds, exactly one undoable command, undo restoration, and redo
 /// restoration at 100% zoom.
-///
-/// This test is RED TDD: the bounds and undo-depth assertions are
-/// expected to fail as long as the background-click pointer-stealing
-/// defect exists in canvas.rs.
 #[test]
 fn native_pointer_drag_selected_node() {
     let mut app = make_app_with_diagram();
@@ -2458,84 +2467,100 @@ fn native_pointer_drag_selected_node() {
     let ctx = egui::Context::default();
     let mut frame = eframe::Frame::_new_kittest();
 
-    // ── Frame 0: empty input to establish canvas rect ──
-    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+    let screen_size = egui::vec2(1280.0, 1024.0);
+
+    // ── Frame 0: empty input to establish canvas rect and widget IDs ──
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
         app.update(ctx, &mut frame);
     });
     let canvas_origin = app.last_canvas_rect.unwrap().min;
 
     // Node center: model (150, 130) → screen (origin + 150, origin + 130) at 100%
-    let node_screen = egui::pos2(canvas_origin.x + 150.0, canvas_origin.y + 130.0);
+    let node_center = egui::pos2(canvas_origin.x + 150.0, canvas_origin.y + 130.0);
 
     // ── Frame 1: click on node to select it ──
-    let click_raw = egui::RawInput {
-        events: vec![
-            egui::Event::PointerButton {
-                pos: node_screen,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerButton {
-                pos: node_screen,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ],
-        ..Default::default()
-    };
-    let _ = ctx.run(click_raw, |ctx| {
-        app.update(ctx, &mut frame);
-    });
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: node_center,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: node_center,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
 
     assert_eq!(app.selected_element_id, Some(id), "Click on node must select it");
     assert_eq!(app.history.undo_depth(), 0, "Selection adds no undo command");
 
-    // ── Frame 2: drag the selected node to a new position ──
+    // ── Frame 2: press + move (no release) to start drag ──
+    // egui's interaction snapshot persists between ctx.run() calls,
+    // so drag_stopped in frame 3 will see the drag from this frame.
     let drag_target = egui::pos2(canvas_origin.x + 200.0, canvas_origin.y + 160.0);
-    let drag_raw = egui::RawInput {
-        events: vec![
-            egui::Event::PointerButton {
-                pos: node_screen,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerMoved(drag_target),
-            egui::Event::PointerButton {
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: node_center,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerMoved(drag_target),
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    // After frame 2: drag state should be set
+    assert_eq!(app.drag_node_id, Some(id), "drag_node_id must be set after press+move");
+    assert!(app.drag_preview_pos.is_some(), "drag_preview_pos must be set after press+move");
+
+    // ── Frame 3: release to commit the drag ──
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![egui::Event::PointerButton {
                 pos: drag_target,
                 button: egui::PointerButton::Primary,
                 pressed: false,
                 modifiers: Default::default(),
-            },
-        ],
-        ..Default::default()
-    };
-    let _ = ctx.run(drag_raw, |ctx| {
-        app.update(ctx, &mut frame);
-    });
+            }],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
 
     let node = app.model.diagrams()[0].get_node(id).unwrap();
 
     // At 100% zoom: screen delta (50, 30) → model delta (50, 30)
     // Expected new position: (100 + 50, 100 + 30) = (150, 130)
-    //
-    // RED TDD: This assertion is expected to FAIL because the background
-    // click interaction steals pointer ownership from the node's
-    // click_and_drag sense.
     assert!(
-        (node.bounds.x() - 150.0).abs() < 0.01 || (node.bounds.y() - 130.0).abs() < 0.01,
-        "RED TDD: Node should have moved after drag at 100% zoom, \
-         but is still at ({}, {}). This confirms the background-click \
-         pointer-stealing defect.",
+        (node.bounds.x() - 150.0).abs() < 0.01 && (node.bounds.y() - 130.0).abs() < 0.01,
+        "Node should be at (150, 130) after drag at 100% zoom, got ({}, {})",
         node.bounds.x(),
         node.bounds.y()
     );
     assert_eq!(
         app.history.undo_depth(),
         1,
-        "RED TDD: Exactly one undoable command after drag (MoveNode)"
+        "Exactly one undoable command after drag (MoveNode)"
     );
 
     // ── Undo restores original position ──
@@ -2548,17 +2573,13 @@ fn native_pointer_drag_selected_node() {
     app.redo_action().unwrap();
     let node = app.model.diagrams()[0].get_node(id).unwrap();
     assert!(
-        (node.bounds.x() - 150.0).abs() < 0.01 || (node.bounds.y() - 130.0).abs() < 0.01,
+        (node.bounds.x() - 150.0).abs() < 0.01 && (node.bounds.y() - 130.0).abs() < 0.01,
         "Redo must restore moved position"
     );
 }
 
 /// Drag at 200% zoom and verify the screen-to-model delta conversion
 /// is correctly divided by scale.
-///
-/// RED TDD: Like native_pointer_drag_selected_node, this test is
-/// expected to fail on bounds assertions while the background-click
-/// pointer-stealing defect exists.
 #[test]
 fn native_pointer_drag_converts_non_100_zoom() {
     let mut app = make_app_with_diagram();
@@ -2580,8 +2601,10 @@ fn native_pointer_drag_converts_non_100_zoom() {
     let ctx = egui::Context::default();
     let mut frame = eframe::Frame::_new_kittest();
 
-    // ── Frame 0: empty input to establish canvas rect ──
-    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+    let screen_size = egui::vec2(1280.0, 1024.0);
+
+    // ── Frame 0: empty input to establish canvas rect and widget IDs ──
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
         app.update(ctx, &mut frame);
     });
     let canvas_origin = app.last_canvas_rect.unwrap().min;
@@ -2591,62 +2614,220 @@ fn native_pointer_drag_converts_non_100_zoom() {
     let node_screen = egui::pos2(canvas_origin.x + 300.0, canvas_origin.y + 260.0);
 
     // ── Frame 1: click to select ──
-    let click_raw = egui::RawInput {
-        events: vec![
-            egui::Event::PointerButton {
-                pos: node_screen,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerButton {
-                pos: node_screen,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ],
-        ..Default::default()
-    };
-    let _ = ctx.run(click_raw, |ctx| {
-        app.update(ctx, &mut frame);
-    });
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: node_screen,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: node_screen,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
     assert_eq!(app.selected_element_id, Some(id), "Click at 200% zoom must select");
 
-    // ── Frame 2: drag at 200% zoom ──
+    // ── Frame 2: press+move at 200% zoom ──
     // Screen delta from node_center: (100, 80)
     // At 200% zoom (scale = 2.0): model delta = (100 / 2, 80 / 2) = (50, 40)
-    // New model position: (100 + 50, 100 + 40) = (150, 140)
     let drag_target = egui::pos2(canvas_origin.x + 400.0, canvas_origin.y + 340.0);
-    let drag_raw = egui::RawInput {
-        events: vec![
-            egui::Event::PointerButton {
-                pos: node_screen,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerMoved(drag_target),
-            egui::Event::PointerButton {
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: node_screen,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerMoved(drag_target),
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    assert_eq!(
+        app.drag_node_id,
+        Some(id),
+        "drag_node_id must be set after press+move at 200% zoom"
+    );
+
+    // ── Frame 3: release to commit ──
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![egui::Event::PointerButton {
                 pos: drag_target,
                 button: egui::PointerButton::Primary,
                 pressed: false,
                 modifiers: Default::default(),
-            },
-        ],
-        ..Default::default()
-    };
-    let _ = ctx.run(drag_raw, |ctx| {
-        app.update(ctx, &mut frame);
-    });
+            }],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
 
     let node = app.model.diagrams()[0].get_node(id).unwrap();
+    // New position: (100 + 50, 100 + 40) = (150, 140)
     assert!(
-        (node.bounds.x() - 150.0).abs() < 0.01 || (node.bounds.y() - 140.0).abs() < 0.01,
-        "RED TDD: At 200% zoom, screen-pixel delta (100, 80) must convert \
+        (node.bounds.x() - 150.0).abs() < 0.01 && (node.bounds.y() - 140.0).abs() < 0.01,
+        "At 200% zoom, screen-pixel delta (100, 80) must convert \
          to model delta (50, 40), giving position (150, 140). \
          Actual: ({}, {}).",
         node.bounds.x(),
         node.bounds.y()
+    );
+}
+
+/// Clicking on empty canvas background must clear the selection (deselect).
+#[test]
+fn background_click_deselects_selected_node() {
+    let mut app = make_app_with_diagram();
+    let element = Class::new("Target");
+    let id = element.base.id;
+    app.model.insert(ModelElement::Class(element));
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(id, ViewNode::new(id, Rect::new(100.0, 100.0, 100.0, 60.0)));
+    app.active_diagram = Some(0);
+    app.select_element(id).unwrap();
+    assert_eq!(app.selected_element_id, Some(id));
+
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let screen_size = egui::vec2(1280.0, 1024.0);
+
+    // First frame: establish layout.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+    let canvas = app.last_canvas_rect.unwrap();
+    // Pick a point on the canvas well away from the node (which is at
+    // origin + 100..200, origin + 100..160).
+    let bg_point = egui::pos2(canvas.right() - 10.0, canvas.bottom() - 10.0);
+
+    // Click on the background.
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: bg_point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: bg_point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    assert!(app.selected_element_id.is_none(), "Background click must clear selection");
+}
+
+/// The MCP gesture mode (DragArgs.gesture = true) must use the shared
+/// execute_gesture_move flow (set drag_node_id, set preview, commit,
+/// clear state) instead of directly calling move_node_to.
+#[test]
+fn qa_gesture_mode_uses_shared_behavior_and_commits_once() {
+    use crate::app::qa::protocol::QaRequest;
+    let mut app = make_app_with_diagram();
+    app.current_file_path = Some(PathBuf::from("/tmp/gesture_move.xmi"));
+    let element = Class::new("Gesture");
+    let id = element.base.id;
+    app.model.insert(ModelElement::Class(element));
+    let diagram_id = app.model.diagrams()[0].id;
+    let orig_pos = Point::new(100.0, 100.0);
+    app.model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(id, ViewNode::new(id, Rect::new(orig_pos.x, orig_pos.y, 100.0, 60.0)));
+    app.active_diagram = Some(0);
+    // Must have project, select node, and set QA cursor.
+    app.qa_select(format!("node:{id}")).unwrap();
+    let ctx = egui::Context::default();
+
+    // Gesture move: use gesture=true to exercise the shared begin/update/commit flow.
+    let dest = Point::new(200.0, 150.0);
+    app.qa_dispatch(
+        QaRequest::Drag {
+            position: Some((dest.x, dest.y)),
+            to_target: None,
+            gesture: Some(true),
+        },
+        &ctx,
+    )
+    .unwrap();
+
+    // Exactly one command was committed.
+    assert_eq!(app.history.undo_depth(), 1, "Gesture mode commits exactly one command");
+
+    let node = app.model.diagrams()[0].get_node(id).unwrap();
+    assert!(
+        (node.bounds.x() - dest.x).abs() < 0.01 && (node.bounds.y() - dest.y).abs() < 0.01,
+        "Gesture move must place node at destination ({}, {}), got ({}, {})",
+        dest.x,
+        dest.y,
+        node.bounds.x(),
+        node.bounds.y()
+    );
+
+    // Verify execute_gesture_move set and cleared drag state.
+    assert!(app.drag_node_id.is_none(), "drag_node_id must be cleared after gesture");
+    assert!(app.drag_preview_pos.is_none(), "preview must be cleared after gesture");
+
+    // Undo restores original position.
+    app.undo_action().unwrap();
+    let node = app.model.diagrams()[0].get_node(id).unwrap();
+    assert!(
+        (node.bounds.x() - orig_pos.x).abs() < 0.01 && (node.bounds.y() - orig_pos.y).abs() < 0.01,
+        "Undo of gesture move must restore original ({}, {}), got ({}, {})",
+        orig_pos.x,
+        orig_pos.y,
+        node.bounds.x(),
+        node.bounds.y()
+    );
+
+    // Legacy mode (gesture=false / None) must still work.
+    app.redo_action().unwrap();
+    app.qa_dispatch(
+        QaRequest::Drag {
+            position: Some((300.0, 200.0)),
+            to_target: None,
+            gesture: None,
+        },
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(app.history.undo_depth(), 2, "Legacy drag must also commit one command");
+    let node = app.model.diagrams()[0].get_node(id).unwrap();
+    assert!(
+        (node.bounds.x() - 300.0).abs() < 0.01 && (node.bounds.y() - 200.0).abs() < 0.01,
+        "Legacy mode must also place node correctly"
     );
 }

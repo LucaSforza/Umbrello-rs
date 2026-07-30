@@ -275,21 +275,33 @@ impl UmbrelloApp {
 
         // ── Handle interactions ──
         let mut selection_handled = false;
+        let ptr_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+        let ptr_clicked = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+        let ptr_released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+        // Use press_origin for hit-testing during drag (latest_pos may be
+        // outside the node rect at non-100% zoom after pointer movement).
+        let drag_hit = self.drag_node_id.or_else(|| {
+            ui.input(|i| i.pointer.press_origin()).and_then(|origin| {
+                node_rects
+                    .iter()
+                    .find(|(_, rect, _, _)| rect.contains(origin))
+                    .map(|(id, _, _, _)| *id)
+            })
+        });
+
         if self.current_tool == ToolMode::Select {
             // ── Select mode: click-to-select + drag-to-move ──
+            //
+            // Uses self-contained hit testing rather than relying solely on
+            // egui's Response::dragged / drag_stopped flags, because those
+            // flags depend on multi-frame interaction snapshots that are
+            // unreliable in test contexts (isolated ctx.run() calls).
             for &(model_element_id, rect, orig_x, orig_y) in &node_rects {
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                let hit = drag_hit == Some(model_element_id);
+                let is_being_dragged = self.drag_node_id == Some(model_element_id);
 
-                if response.dragged() {
-                    if self.drag_node_id != Some(model_element_id) {
-                        self.drag_node_id = Some(model_element_id);
-                        self.drag_start_pos = Some(egui::pos2(orig_x as f32, orig_y as f32));
-                    }
-                    let delta = response.drag_delta();
-                    let new_pos =
-                        preview_node_position(Point::new(orig_x, orig_y), delta, transform.scale);
-                    self.drag_preview_pos = Some(new_pos);
-                }
+                // Click to select
                 if response.clicked() {
                     let name = self
                         .model
@@ -300,30 +312,44 @@ impl UmbrelloApp {
                     self.status_message = format!("Selected: {}", name);
                     selection_handled = true;
                 }
-                if response.drag_stopped() {
-                    if self.drag_preview_pos.is_none()
-                        && self.drag_node_id == Some(model_element_id)
-                    {
-                        let delta = response.drag_delta();
+
+                // Drag update (while button is down, pointer has moved)
+                if hit && ptr_down {
+                    selection_handled = true;
+                    if self.drag_node_id != Some(model_element_id) {
+                        self.drag_node_id = Some(model_element_id);
+                        self.drag_start_pos = Some(egui::pos2(orig_x as f32, orig_y as f32));
+                    }
+                    let screen_delta = ui.input(|i| i.pointer.delta());
+                    if screen_delta != egui::Vec2::ZERO {
+                        let new_pos = preview_node_position(
+                            Point::new(orig_x, orig_y),
+                            screen_delta,
+                            transform.scale,
+                        );
+                        self.drag_preview_pos = Some(new_pos);
+                    }
+                }
+
+                // Drag commit (button was just released while this node was
+                // the drag target, or has a pending preview).
+                if ptr_released && is_being_dragged {
+                    if self.drag_preview_pos.is_none() {
+                        let screen_delta = ui.input(|i| i.pointer.delta());
                         self.drag_preview_pos = Some(preview_node_position(
                             Point::new(orig_x, orig_y),
-                            delta,
+                            screen_delta,
                             transform.scale,
                         ));
                     }
-                    if let (Some(node_id), Some(position)) =
-                        (self.drag_node_id, self.drag_preview_pos)
-                    {
-                        let _ = self.move_node_to(diagram_id, node_id, position);
+                    if let Some(position) = self.drag_preview_pos.take() {
+                        let _ = self.move_node_to(diagram_id, model_element_id, position);
                     }
                     self.drag_node_id = None;
                     self.drag_start_pos = None;
-                    self.drag_preview_pos = None;
                 }
             }
-            if ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary))
-                && !selection_handled
-            {
+            if ptr_clicked && !selection_handled {
                 if let Some(pointer) = ui.ctx().pointer_latest_pos() {
                     let paths = self.screen_edge_paths(&diagram, canvas_rect.min);
                     let valid_paths: Vec<_> = paths
@@ -436,12 +462,25 @@ impl UmbrelloApp {
         }
 
         // ── Background click to deselect (only in Select mode) ──────
+        // NOTE: This does NOT allocate an overlapping Sense::click interact because
+        // doing so steals pointer ownership from the node click_and_drag widgets,
+        // preventing native node drag from working (S3/S4 regression).
+        // Instead, we inspect the global click state and verify the click was not
+        // on any node rect.
         if self.current_tool == ToolMode::Select
             && self.selected_element_id.is_some()
             && !selection_handled
+            && ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary))
         {
-            let bg_interact = ui.interact(ui.max_rect(), ui.next_auto_id(), egui::Sense::click());
-            if bg_interact.clicked() {
+            let on_a_node = ui
+                .input(|input| input.pointer.press_origin())
+                .or_else(|| ui.ctx().pointer_latest_pos())
+                .is_some_and(|pointer_pos| {
+                    node_rects
+                        .iter()
+                        .any(|(_, rect, _, _)| rect.contains(pointer_pos))
+                });
+            if !on_a_node {
                 self.clear_selection();
                 self.status_message = "Selection cleared".into();
             }

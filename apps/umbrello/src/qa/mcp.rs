@@ -43,6 +43,11 @@ pub(crate) struct DragArgs {
     pub y: Option<f64>,
     /// Optional destination node target for edge creation.
     pub to_target: Option<String>,
+    /// When true, use native-equivalent gesture simulation (begin → preview → commit)
+    /// instead of directly calling move_node_to. Defaults to false.
+    /// The gesture mode exercises the same control flow as native pointer drag,
+    /// including drag-node-id/drag-preview-pos state transitions and zoom conversion.
+    pub gesture: Option<bool>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct SyncArgs {
@@ -192,7 +197,7 @@ impl QaMcpServer {
     /// Drag the selected node to coordinates or another node target.
     #[tool(
         name = "ui_drag",
-        description = "Drag the selected node to a point or destination node; with canvas selected and Select active, x/y are screen-space pan deltas."
+        description = "Drag the selected node to a point or destination node; with canvas selected and Select active, x/y are screen-space pan deltas. Set gesture=true to use native-equivalent gesture simulation (begin/preview/commit) instead of direct move."
     )]
     pub(crate) async fn ui_drag(
         &self,
@@ -205,6 +210,7 @@ impl QaMcpServer {
                 QaRequest::Drag {
                     position,
                     to_target: args.to_target,
+                    gesture: args.gesture,
                 },
                 &context,
             )
@@ -361,6 +367,7 @@ mod tests {
             x: Some(150.0),
             y: Some(130.0),
             to_target: None,
+            gesture: None,
         };
         assert_eq!(args.x, Some(150.0));
         assert_eq!(args.y, Some(130.0));
@@ -372,6 +379,7 @@ mod tests {
             x: Some(150.0),
             y: Some(130.0),
             to_target: None,
+            gesture: None,
         };
         assert_eq!(args_zoom.x, args.x);
         assert_eq!(args_zoom.y, args.y);
@@ -381,8 +389,18 @@ mod tests {
             x: Some(12.0),
             y: Some(-7.0),
             to_target: None,
+            gesture: None,
         };
         assert_eq!(canvas_pan.x, Some(12.0));
         assert_eq!(canvas_pan.y, Some(-7.0));
+
+        // Gesture mode flag is optional and defaults to None / false.
+        let gesture_args = DragArgs {
+            x: Some(200.0),
+            y: Some(100.0),
+            to_target: None,
+            gesture: Some(true),
+        };
+        assert_eq!(gesture_args.gesture, Some(true));
     }
 }
