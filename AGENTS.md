@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 391 tests passing across 5 crates. The core domain model covers 11 UML element types. The GUI application (egui/eframe) renders partitioned class boxes, Component/Node/Artifact deployment shapes, and selectable semantic edges; uses a project-first XMI workflow; creates and switches among Class, Use Case, Component, and Deployment diagrams; filters authoring tools by diagram kind; provides a clickable/reusable model browser and relationship-aware property editor; supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan; writer-assigned XMI IDs are document-wide collision-safe; selected nodes support cumulative native mouse drag with one command on release and no-motion click adds no history. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and semantic targets for projects, diagrams, browser elements, nodes, edges, properties, and history.
+**Current state:** 396 tests passing across 5 crates. The core domain model covers 11 UML element types. The GUI application (egui/eframe) renders partitioned class boxes, Component/Node/Artifact deployment shapes, and selectable semantic edges; uses a project-first XMI workflow; creates and switches among Class, Use Case, Component, and Deployment diagrams; filters authoring tools by diagram kind; provides a clickable/reusable model browser and relationship-aware property editor; supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan; writer-assigned XMI IDs are document-wide collision-safe; selected nodes support cumulative native mouse drag with one command on release and no-motion clicks add no history. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and semantic targets for projects, diagrams, browser elements, nodes, edges, properties, and history.
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -135,7 +135,7 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 391 tests, all passing** (verified 2026-07-30).
+**Total: 396 tests, all passing** (verified 2026-07-31).
 
 ### By Crate
 
@@ -146,7 +146,7 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 | `uml-core` serde_roundtrip | 9 | External serde round-trip tests, including Actor, UseCase, Component, Node, and all Artifact draw modes |
 | `uml-core` diagram_geometry | 2 | `diagram/geometry.rs` — Point, Size, Rect construction and arithmetic |
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
-| `uml-io` XMI unit tests | 68 | Reader/writer parsing, common metadata compatibility, collision-safe generated/preserved IDs, one-Class diagram save/reload, semantic round trips including diagram zoom and Component/Node/Artifact widgets, diagrams, relationships, and file helpers |
+| `uml-io` XMI unit tests | 73 | Reader/writer parsing, common metadata compatibility, collision-safe generated/preserved IDs, one-Class diagram save/reload, nested package containment round-trip, canonical single-definition emission, semantic round trips including diagram zoom and Component/Node/Artifact widgets, diagrams, relationships, and file helpers |
 | `uml-io` real corpus | 1 | Parse the available C++ XMI corpus without failure |
 | `apps/umbrello` tests | 123 | GUI behavior including project-first and multi-diagram flows, diagram/tool compatibility, clickable/reusable browser elements, selectable/editable relationships, frame-level native pointer drag, multi-frame cumulative movement, no-op click, MCP gesture mode, viewport navigation, semantic QA targets, MCP schemas/CLI integration, and synchronized PNG output |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
@@ -381,9 +381,11 @@ cargo test -p uml-core serde_roundtrip_model_element
 
 ### Persistence and Native Drag Regression Fixes
 
-- **391 tests** verified across the workspace
+- **396 tests** verified across the workspace
 - One reserved ID set covers preserved originals and all synthetic writer IDs; duplicate preserved IDs return structured `XmiWriteError::DuplicateOriginalId`
 - Minimal Class diagram save/reload is covered
+- Nested package children are emitted exactly once under deterministic canonical containment ownership
+- Reader restores Package.children and parent_index for parsed structural ModelElement children
 - Background deselection no longer overlaps node pointer ownership
 - Shared begin/update/commit drag state machine accumulates multi-frame screen deltas, commits one MoveNode, undo restores, and no-motion clicks are no-ops
 - Existing seven-tool MCP ui_drag has optional gesture mode for the shared flow
@@ -414,7 +416,7 @@ cargo test -p uml-core serde_roundtrip_model_element
 | **Project-first authoring** | A new model receives and successfully writes its XMI path before diagrams or elements are authored; destructive flows proceed only after a confirmed save or discard |
 | **Central diagram/tool compatibility** | One pure matrix drives native, keyboard, helper, and MCP authoring gates; restrictions apply prospectively and never delete loaded legacy content |
 | **Semantic node/edge/browser selection** | `selected_element_id` identifies any `ModelElement`, including relationships; diagram views and browser rows select the same semantic object and property draft |
-| **Collision-aware XMI allocation** | Unique preserved originals are reserved before generation; wrapper/features/diagram synthetic IDs use the same allocator; reader duplicate rejection remains strict |
+| **Collision-aware XMI allocation** | Unique preserved originals are reserved before generation; wrapper/features/diagram synthetic IDs use the same allocator; reader duplicate rejection remains strict; deterministic canonical containment prevents duplicate definitions for multi-parent repository elements |
 
 ---
 

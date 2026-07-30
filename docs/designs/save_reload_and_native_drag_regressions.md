@@ -133,6 +133,58 @@ cargo test -p uml-io generated_xmi_ids_do_not_collide
 cargo test -p uml-io xmi
 ```
 
+### S2F1 — Emit nested package definitions exactly once
+
+**Owned files:**
+
+- `crates/uml-io/src/xmi/writer.rs`
+
+**Dependencies:** S2; G3 reviewer finding.
+
+Select structural emission roots from package containment instead of treating every non-wrapper element as top-level. Direct children of a package represented by the `UML:Model` wrapper and unparented elements are emitted at wrapper level; descendants of nested packages are emitted recursively exactly once. If repository state permits multiple package parents, use a deterministic canonical owner or a structured error so no defining ID is emitted twice.
+
+**Acceptance criteria:**
+
+- `UML Model -> Package P -> Class C` writes one defining Class ID, reloads, and preserves `P -> C` membership.
+- Insertion order and multiple-parent edge cases cannot produce duplicate defining IDs.
+- Relationships remain emitted once and existing round trips remain valid.
+
+**Validation:**
+
+```sh
+cargo fmt --all --check
+cargo test -p uml-io nested_package_definitions_are_emitted_once
+cargo test -p uml-io xmi
+```
+
+### S2F2 — Restore nested containment and canonical multi-parent emission
+
+**Owned files:**
+
+- `crates/uml-io/src/xmi/reader.rs`
+- `crates/uml-io/src/xmi/writer.rs`
+
+**Dependencies:** S2F1 inspection.
+
+Attach each parsed structural child to the current package/model parent after insertion so save/reload restores `Package.children` and `parent_index`. Complete canonical ownership in recursive package writing: a multiply-parented child is emitted only by its chosen canonical package, including when the root is one of its parents.
+
+**Acceptance criteria:**
+
+- Nested `P -> C` membership and `parents_of(C)` survive round trip.
+- Package nesting survives for start/end and self-closing structural elements.
+- Multiple package parents never cause duplicate defining IDs; canonical choice is deterministic and covered.
+- Existing corpus and reference validation remain green.
+
+**Validation:**
+
+```sh
+cargo fmt --all --check
+cargo test -p uml-io nested_package_definitions_are_emitted_once
+cargo test -p uml-io package_containment
+cargo test -p uml-io xmi
+cargo test --workspace
+```
+
 ### S3 — Red native-drag regressions
 
 **Owned files:**
@@ -301,11 +353,16 @@ Blocking or major findings create fix subtasks resumed with the original impleme
 
 ## Implementation Outcome
 
-**Commits (oldest to newest):** `da60d53`, `dc91de2`, `6dbc530`, `94cac43`, `99193ea`, `1b7c98a`
+**Commits (oldest to newest):** `da60d53`, `dc91de2`, `6dbc530`, `94cac43`, `99193ea`, `1b7c98a`, `1ea5bc0`, `01a7868`
 
-**Integrated validation passed** on 2026-07-30:
+**Integrated validation:** first pass on 2026-07-30 (391 tests). Rerun after S2F2 on 2026-07-31 with **396 tests**:
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 ```
+
+**G3 review findings and fixes:**
+- G3 found duplicate nested-package emission in output XMI
+- S2F1 eliminated duplicate definitions by writing each structural child under its canonical package parent exactly once
+- S2F2 restored Package.children and parent_index on read so round-trip preserves containment; deterministic canonical ownership prevents multi-parent duplicates
