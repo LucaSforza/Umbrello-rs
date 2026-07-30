@@ -7,9 +7,7 @@
 // binary target sees this code as unused.
 #![allow(unused_imports)]
 
-use crate::app::{
-    DraftAttribute, DraftOperation, DraftParameter, UmbrelloApp,
-};
+use crate::app::{DraftAttribute, DraftOperation, DraftParameter, UmbrelloApp};
 use crate::rendering::{element_color, type_display, visibility_symbol};
 use crate::tool_palette::ToolMode;
 use eframe::App;
