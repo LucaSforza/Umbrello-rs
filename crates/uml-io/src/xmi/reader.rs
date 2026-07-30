@@ -3310,6 +3310,157 @@ mod tests {
         check_old_format_xmi(XMI_OLD_ALL_SIX_KINDS, 4, 4, "4 old-format kinds");
     }
 
+    const XMI_OLD_AGGREGATION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="Whole"/>
+    <UML:Class xmi.id="C2" name="Part"/>
+    <UML:Association xmi.id="AG1">
+     <UML:Association.connection>
+      <UML:AssociationEnd xmi.id="E1" type="C1" aggregation="aggregate"/>
+      <UML:AssociationEnd xmi.id="E2" type="C2" aggregation="none"/>
+     </UML:Association.connection>
+    </UML:Association>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets>
+     <classwidget xmi.id="C1" x="0" y="0" width="100" height="60"/>
+     <classwidget xmi.id="C2" x="300" y="0" width="100" height="60"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="WAG1" widgetaid="C1" widgetbid="C2" type="501">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+    #[test]
+    fn old_format_aggregation() {
+        check_old_format_xmi(XMI_OLD_AGGREGATION, 1, 1, "Aggregation");
+        // Verify kind and directed endpoints
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader
+            .read_from(XMI_OLD_AGGREGATION.as_bytes(), &mut model)
+            .unwrap();
+        reader.resolve(&mut model).unwrap();
+        let rels: Vec<UmlId> = model
+            .iter()
+            .filter_map(|(id, e)| {
+                if matches!(e, ModelElement::Relationship(_)) {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(rels.len(), 1, "expected exactly 1 Relationship");
+        if let ModelElement::Relationship(r) = model.get(rels[0]).unwrap() {
+            assert_eq!(r.kind, AssociationType::Aggregation);
+            let whole_id = model
+                .iter()
+                .find(|(_, e)| e.name() == "Whole")
+                .map(|(id, _)| id)
+                .unwrap();
+            let part_id = model
+                .iter()
+                .find(|(_, e)| e.name() == "Part")
+                .map(|(id, _)| id)
+                .unwrap();
+            assert_eq!(r.source_id, whole_id, "Aggregation source should be the Whole side");
+            assert_eq!(r.target_id, part_id, "Aggregation target should be the Part side");
+        } else {
+            panic!("expected a Relationship");
+        }
+    }
+
+    const XMI_OLD_COMPOSITION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="Container"/>
+    <UML:Class xmi.id="C2" name="Part"/>
+    <UML:Association xmi.id="CM1">
+     <UML:Association.connection>
+      <UML:AssociationEnd xmi.id="E1" type="C1" aggregation="composite"/>
+      <UML:AssociationEnd xmi.id="E2" type="C2" aggregation="none"/>
+     </UML:Association.connection>
+    </UML:Association>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets>
+     <classwidget xmi.id="C1" x="0" y="0" width="100" height="60"/>
+     <classwidget xmi.id="C2" x="300" y="0" width="100" height="60"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="WCM1" widgetaid="C1" widgetbid="C2" type="510">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+    #[test]
+    fn old_format_composition() {
+        check_old_format_xmi(XMI_OLD_COMPOSITION, 1, 1, "Composition");
+        // Verify kind and directed endpoints
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader
+            .read_from(XMI_OLD_COMPOSITION.as_bytes(), &mut model)
+            .unwrap();
+        reader.resolve(&mut model).unwrap();
+        let rels: Vec<UmlId> = model
+            .iter()
+            .filter_map(|(id, e)| {
+                if matches!(e, ModelElement::Relationship(_)) {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(rels.len(), 1, "expected exactly 1 Relationship");
+        if let ModelElement::Relationship(r) = model.get(rels[0]).unwrap() {
+            assert_eq!(r.kind, AssociationType::Composition);
+            let container_id = model
+                .iter()
+                .find(|(_, e)| e.name() == "Container")
+                .map(|(id, _)| id)
+                .unwrap();
+            let part_id = model
+                .iter()
+                .find(|(_, e)| e.name() == "Part")
+                .map(|(id, _)| id)
+                .unwrap();
+            assert_eq!(
+                r.source_id, container_id,
+                "Composition source should be the Container side"
+            );
+            assert_eq!(r.target_id, part_id, "Composition target should be the Part side");
+        } else {
+            panic!("expected a Relationship");
+        }
+    }
+
     const XMI_OLD_PARALLEL: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
  <XMI.header/>
