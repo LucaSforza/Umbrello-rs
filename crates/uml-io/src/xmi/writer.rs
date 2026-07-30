@@ -926,7 +926,9 @@ impl<W: Write> XmiWriter<W> {
         edge: &uml_core::ViewEdge,
         model: &UmlModel,
     ) -> Result<(), XmiWriteError> {
-        let assoc_xmi_id = self.gen_sub_id();
+        // Use the semantic relationship's XMI ID (C++ compatible).
+        // The assocwidget and its backing relationship share one xmi.id.
+        let assoc_xmi_id = self.lookup_xmi_id(edge.relationship_id);
 
         // Look up widget XMI IDs for the source and target
         let widget_a = self
@@ -1099,9 +1101,9 @@ mod tests {
     use super::*;
     use crate::xmi::reader::XmiReader;
     use uml_core::{
-        Actor, Artifact, ArtifactDrawMode, Attribute, Class, Component, Datatype, Enum, Interface,
-        ModelElement, Node, Operation, Package, Parameter, ParameterDirection, TypeReference,
-        UseCase, Visibility,
+        Actor, Artifact, ArtifactDrawMode, AssociationType, Attribute, Class, Component, Datatype,
+        Diagram, DiagramKind, Enum, Interface, LineRouting, ModelElement, Node, Operation, Package,
+        Parameter, ParameterDirection, Relationship, TypeReference, UseCase, ViewEdge, Visibility,
     };
 
     /// Helper: create a simple model with one class.
@@ -2123,5 +2125,233 @@ mod tests {
         );
         let errors = restored.validate_references();
         assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
+
+    #[test]
+    fn assocwidget_shares_semantic_relationship_xmi_id() {
+        let mut model = UmlModel::new();
+        let d = Diagram::new("Test", DiagramKind::Class);
+        model.add_diagram(d);
+
+        let cls1 = Class::new("A");
+        let id1 = cls1.base.id;
+        model.insert(ModelElement::Class(cls1));
+        let cls2 = Class::new("B");
+        let id2 = cls2.base.id;
+        model.insert(ModelElement::Class(cls2));
+
+        for kind in [
+            AssociationType::Generalization,
+            AssociationType::Realization,
+            AssociationType::Association,
+            AssociationType::Aggregation,
+            AssociationType::Composition,
+            AssociationType::Dependency,
+        ] {
+            let rel = match kind {
+                AssociationType::Generalization => Relationship::new_generalization(id1, id2),
+                AssociationType::Realization => Relationship::new_realization(id1, id2),
+                AssociationType::Association => Relationship::new_association(id1, id2),
+                AssociationType::Aggregation => Relationship::new_aggregation(id1, id2),
+                AssociationType::Composition => Relationship::new_composition(id1, id2),
+                AssociationType::Dependency => Relationship::new_dependency(id1, id2),
+            };
+            let rel_id = rel.base.id;
+            model.insert(ModelElement::Relationship(rel));
+
+            let diagram_id = model.diagrams()[0].id;
+            model.get_diagram_mut(diagram_id).unwrap().add_edge(
+                uml_core::EdgeId::new(),
+                ViewEdge::new(rel_id, id1, id2, LineRouting::Direct),
+            );
+        }
+
+        let xml = write_to_string(&model);
+        // After save/reload, there must be exactly 6 relationships and 6 edges
+        // (one per assocwidget), not 12 relationships.
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        let rel_count = restored
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Relationship(_)))
+            .count();
+        assert_eq!(
+            rel_count, 6,
+            "Must have exactly 6 relationships after save/reload, got {rel_count}"
+        );
+
+        let edge_count: usize = restored
+            .diagrams()
+            .iter()
+            .map(|diagram| diagram.edges.len())
+            .sum();
+        assert_eq!(edge_count, 6, "Must have exactly 6 edges after save/reload, got {edge_count}");
+
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
+
+    #[test]
+    fn round_trip_preserves_relationship_count_across_repeated_save() {
+        let mut model = UmlModel::new();
+        let d = Diagram::new("Test", DiagramKind::Class);
+        model.add_diagram(d);
+
+        let cls1 = Class::new("A");
+        let id1 = cls1.base.id;
+        model.insert(ModelElement::Class(cls1));
+        let cls2 = Class::new("B");
+        let id2 = cls2.base.id;
+        model.insert(ModelElement::Class(cls2));
+
+        // Add one relationship of each kind with diagram edge
+        for kind in [
+            AssociationType::Generalization,
+            AssociationType::Realization,
+            AssociationType::Association,
+            AssociationType::Aggregation,
+            AssociationType::Composition,
+            AssociationType::Dependency,
+        ] {
+            let rel = match kind {
+                AssociationType::Generalization => Relationship::new_generalization(id1, id2),
+                AssociationType::Realization => Relationship::new_realization(id1, id2),
+                AssociationType::Association => Relationship::new_association(id1, id2),
+                AssociationType::Aggregation => Relationship::new_aggregation(id1, id2),
+                AssociationType::Composition => Relationship::new_composition(id1, id2),
+                AssociationType::Dependency => Relationship::new_dependency(id1, id2),
+            };
+            let rel_id = rel.base.id;
+            model.insert(ModelElement::Relationship(rel));
+            model
+                .get_diagram_mut(model.diagrams()[0].id)
+                .unwrap()
+                .add_edge(
+                    uml_core::EdgeId::new(),
+                    ViewEdge::new(rel_id, id1, id2, LineRouting::Direct),
+                );
+        }
+
+        // Round-trip 3 times
+        for iteration in 1..=3 {
+            let xml = write_to_string(&model);
+            let mut restored = UmlModel::new();
+            let mut reader = XmiReader::new();
+            reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+            reader.resolve(&mut restored).unwrap();
+            let rel_count = restored
+                .iter()
+                .filter(|(_, e)| matches!(e, ModelElement::Relationship(_)))
+                .count();
+            assert_eq!(rel_count, 6, "Iteration {iteration}: must have exactly 6 relationships");
+            let errors = restored.validate_references();
+            assert!(errors.is_empty(), "Iteration {iteration}: dangling refs: {:?}", errors);
+            model = restored;
+        }
+    }
+
+    #[test]
+    fn one_relationship_in_multiple_diagrams_remains_one_element() {
+        let mut model = UmlModel::new();
+        let d1 = Diagram::new("D1", DiagramKind::Class);
+        let d1_id = d1.id;
+        model.add_diagram(d1);
+        let d2 = Diagram::new("D2", DiagramKind::Class);
+        let d2_id = d2.id;
+        model.add_diagram(d2);
+
+        let cls1 = Class::new("A");
+        let id1 = cls1.base.id;
+        model.insert(ModelElement::Class(cls1));
+        let cls2 = Class::new("B");
+        let id2 = cls2.base.id;
+        model.insert(ModelElement::Class(cls2));
+
+        let rel = Relationship::new_association(id1, id2);
+        let rel_id = rel.base.id;
+        model.insert(ModelElement::Relationship(rel));
+
+        // Add same relationship to both diagrams
+        model.get_diagram_mut(d1_id).unwrap().add_edge(
+            uml_core::EdgeId::new(),
+            ViewEdge::new(rel_id, id1, id2, LineRouting::Direct),
+        );
+        model.get_diagram_mut(d2_id).unwrap().add_edge(
+            uml_core::EdgeId::new(),
+            ViewEdge::new(rel_id, id1, id2, LineRouting::Direct),
+        );
+
+        let xml = write_to_string(&model);
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        // Exactly one relationship
+        let rel_count = restored
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Relationship(_)))
+            .count();
+        assert_eq!(rel_count, 1, "Must be exactly 1 relationship, got {rel_count}");
+
+        // Two edges across diagrams
+        let edge_count: usize = restored.diagrams().iter().map(|d| d.edges.len()).sum();
+        assert_eq!(edge_count, 2, "Must be exactly 2 edges, got {edge_count}");
+
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling refs: {:?}", errors);
+    }
+
+    #[test]
+    fn parallel_same_kind_same_endpoint_relationships_remain_distinct() {
+        let mut model = UmlModel::new();
+        let d = Diagram::new("Test", DiagramKind::Class);
+        let d_id = d.id;
+        model.add_diagram(d);
+
+        let cls1 = Class::new("A");
+        let id1 = cls1.base.id;
+        model.insert(ModelElement::Class(cls1));
+        let cls2 = Class::new("B");
+        let id2 = cls2.base.id;
+        model.insert(ModelElement::Class(cls2));
+
+        // Two parallel associations between A and B
+        let rel1 = Relationship::new_association(id1, id2);
+        let rel1_id = rel1.base.id;
+        model.insert(ModelElement::Relationship(rel1));
+        model.get_diagram_mut(d_id).unwrap().add_edge(
+            uml_core::EdgeId::new(),
+            ViewEdge::new(rel1_id, id1, id2, LineRouting::Direct),
+        );
+
+        let rel2 = Relationship::new_association(id1, id2);
+        let rel2_id = rel2.base.id;
+        model.insert(ModelElement::Relationship(rel2));
+        model.get_diagram_mut(d_id).unwrap().add_edge(
+            uml_core::EdgeId::new(),
+            ViewEdge::new(rel2_id, id1, id2, LineRouting::Direct),
+        );
+
+        let xml = write_to_string(&model);
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        let rel_count = restored
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Relationship(_)))
+            .count();
+        assert_eq!(
+            rel_count, 2,
+            "Parallel same-kind relationships must remain distinct, got {rel_count}"
+        );
+
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling refs: {:?}", errors);
     }
 }

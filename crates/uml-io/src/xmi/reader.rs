@@ -212,6 +212,12 @@ pub struct XmiReader {
     inside_linepath: bool,
     /// Data collected for the current assocwidget (set when we see `<assocwidget>`).
     pending_assocwidget: Option<PendingAssocWidget>,
+    /// Pre-allocated UmlIds for pending relationships, keyed by their XMI ID.
+    /// Populated during pass 1 so that assocwidgets (which use the same XMI ID
+    /// in the C++-compatible format) can resolve to the same UmlId.
+    pending_relation_xmi_ids: HashMap<String, UmlId>,
+    /// XMI ID of the current UML:Association element (set at Start, used at End).
+    current_association_xmi_id: Option<String>,
 }
 
 impl XmiReader {
@@ -245,6 +251,8 @@ impl XmiReader {
             inside_associations: false,
             inside_linepath: false,
             pending_assocwidget: None,
+            pending_relation_xmi_ids: HashMap::new(),
+            current_association_xmi_id: None,
         }
     }
 
@@ -405,6 +413,12 @@ impl XmiReader {
                             self.inside_association = true;
                             // Store association metadata
                             self.association_ends.clear();
+                            // Register the association's xmi.id so that a
+                            // shared-ID assocwidget can resolve to this UmlId.
+                            let xmi_id = Self::require_attr(e, "xmi.id", "Association")?;
+                            let uml_id = self.register_id(&xmi_id)?;
+                            self.pending_relation_xmi_ids.insert(xmi_id.clone(), uml_id);
+                            self.current_association_xmi_id = Some(xmi_id);
                         },
                         "Association.connection" if self.inside_association => {
                             self.inside_association_connection = true;
@@ -770,16 +784,20 @@ impl XmiReader {
         }
         for pg in &self.pending_gen_direct {
             if let PendingGeneralization::Direct {
+                ref gen_xmi_id,
                 ref child_xmi,
                 ref parent_xmi,
-                ..
             } = pg
             {
                 if let (Some(&child_id), Some(&parent_id)) =
                     (self.id_map.get(child_xmi), self.id_map.get(parent_xmi))
                 {
                     if !inserted_gens.contains(&(child_id, parent_id)) {
-                        let rel = Relationship::new_generalization(child_id, parent_id);
+                        let mut rel = Relationship::new_generalization(child_id, parent_id);
+                        // Use the pre-registered UmlId if available.
+                        if let Some(&pre_id) = self.pending_relation_xmi_ids.get(gen_xmi_id) {
+                            rel.base.id = pre_id;
+                        }
                         model.insert(ModelElement::Relationship(rel));
                     }
                 }
@@ -794,6 +812,13 @@ impl XmiReader {
                 (self.id_map.get(&pr.source_xmi), self.id_map.get(&pr.target_xmi))
             {
                 let mut rel = Relationship::new(pr.kind, source_id, target_id);
+                // Use the pre-registered UmlId if available (C++-compatible
+                // shared-ID format), preserving the association with assocwidgets.
+                if !pr.xmi_id.is_empty() {
+                    if let Some(&pre_id) = self.pending_relation_xmi_ids.get(&pr.xmi_id) {
+                        rel.base.id = pre_id;
+                    }
+                }
                 rel.base.name = pr.name.clone().unwrap_or_default();
                 rel.source_multiplicity = pr.source_multiplicity.clone();
                 rel.target_multiplicity = pr.target_multiplicity.clone();
@@ -1302,6 +1327,9 @@ impl XmiReader {
         {
             // The xmi.id is the generalization element's own ID
             let gen_xmi_id = Self::require_attr(e, "xmi.id", "Generalization")?;
+            let uml_id = self.register_id(&gen_xmi_id)?;
+            self.pending_relation_xmi_ids
+                .insert(gen_xmi_id.clone(), uml_id);
             self.pending_gen_direct.push(PendingGeneralization::Direct {
                 gen_xmi_id,
                 child_xmi: child,
@@ -1359,8 +1387,9 @@ impl XmiReader {
         let end0 = &self.association_ends[0];
         let end1 = &self.association_ends[1];
 
+        let xmi_id = self.current_association_xmi_id.take().unwrap_or_default();
         self.pending_relations.push(PendingRelation {
-            xmi_id: String::new(), // Will be filled if we track association xmi.id
+            xmi_id,
             kind,
             source_xmi: end0.type_xmi.clone(),
             target_xmi: end1.type_xmi.clone(),
@@ -1387,8 +1416,12 @@ impl XmiReader {
         let client = Self::require_attr(e, "client", "Dependency")?;
         let name = Self::attr_value(e, "name");
 
+        let xmi_id = Self::require_attr(e, "xmi.id", "Dependency")?;
+        let uml_id = self.register_id(&xmi_id)?;
+        self.pending_relation_xmi_ids.insert(xmi_id.clone(), uml_id);
+
         self.pending_relations.push(PendingRelation {
-            xmi_id: String::new(),
+            xmi_id,
             kind: AssociationType::Dependency,
             source_xmi: client,   // client depends on supplier
             target_xmi: supplier, // supplier is the target
@@ -1417,8 +1450,12 @@ impl XmiReader {
         let client = Self::require_attr(e, "client", "Abstraction")?;
         let name = Self::attr_value(e, "name");
 
+        let xmi_id = Self::require_attr(e, "xmi.id", "Abstraction")?;
+        let uml_id = self.register_id(&xmi_id)?;
+        self.pending_relation_xmi_ids.insert(xmi_id.clone(), uml_id);
+
         self.pending_relations.push(PendingRelation {
-            xmi_id: String::new(),
+            xmi_id,
             kind: AssociationType::Realization,
             source_xmi: client,   // client realizes supplier
             target_xmi: supplier, // supplier is the interface
@@ -1653,11 +1690,25 @@ impl XmiReader {
         let waypoints: Vec<Point> = paw.start_point.into_iter().chain(paw.end_point).collect();
 
         // Find or create a relationship ID for the edge.
-        // For Generalization/Realization, look for an existing relationship
-        // between the two elements.
+        //
+        // Priority 1: the assocwidget's xmi.id matches a pre-registered
+        // semantic relationship (C++-compatible shared-ID format).
+        if let Some(&rel_id) = self.pending_relation_xmi_ids.get(&paw.xmi_id) {
+            let edge = ViewEdge::new(rel_id, widget_a_uml, widget_b_uml, LineRouting::Direct);
+            let edge_id = EdgeId::new();
+            if let Some(ref mut diagram) = self.current_diagram {
+                diagram.add_edge(edge_id, edge);
+                if let Some(edge_mut) = diagram.edges.get_mut(&edge_id) {
+                    edge_mut.waypoints = waypoints;
+                }
+            }
+            return;
+        }
+
+        // Priority 2: for Generalization/Realization, look for an existing
+        // relationship between the two elements (old format or foreign input).
         let rel_id = match assoc_type {
             AssociationType::Generalization | AssociationType::Realization => {
-                // Try to find an existing relationship of this type
                 let existing: Option<UmlId> = model
                     .iter()
                     .filter_map(|(id, e)| {
@@ -1673,7 +1724,6 @@ impl XmiReader {
                     })
                     .next();
                 existing.unwrap_or_else(|| {
-                    // Create a new relationship if none exists
                     let rel = uml_core::Relationship::new(assoc_type, widget_a_uml, widget_b_uml);
                     let rel_id = rel.base.id;
                     model.insert(uml_core::ModelElement::Relationship(rel));
@@ -1694,7 +1744,6 @@ impl XmiReader {
 
         if let Some(ref mut diagram) = self.current_diagram {
             diagram.add_edge(edge_id, edge);
-            // Add waypoints to the edge directly via the mutable edges map
             if let Some(edge_mut) = diagram.edges.get_mut(&edge_id) {
                 edge_mut.waypoints = waypoints;
             }
