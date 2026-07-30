@@ -4019,58 +4019,50 @@ fn rect_exit_point_degenerate_cases() {
     assert!((p.x - 100.0).abs() < 0.01, "toward inside rect: exit at right boundary");
 }
 
-/// S3-03: A helper to set up diagram with two nodes and an edge of a given kind.
-#[allow(dead_code)]
-fn setup_edge_diagram(kind: uml_core::AssociationType) -> UmbrelloApp {
-    let mut model = UmlModel::new();
-    let d = Diagram::new("Test", DiagramKind::Class);
-    let diagram_id = d.id;
-    model.add_diagram(d);
-
-    let cls_a = Class::new("ClassA");
-    let a_id = cls_a.base.id;
-    model.insert(ModelElement::Class(cls_a));
-    let cls_b = Class::new("ClassB");
-    let b_id = cls_b.base.id;
-    model.insert(ModelElement::Class(cls_b));
-
-    model
-        .get_diagram_mut(diagram_id)
-        .unwrap()
-        .add_node(a_id, ViewNode::new(a_id, Rect::new(0.0, 0.0, 100.0, 60.0)));
-    model
-        .get_diagram_mut(diagram_id)
-        .unwrap()
-        .add_node(b_id, ViewNode::new(b_id, Rect::new(300.0, 0.0, 100.0, 60.0)));
-
-    let rel = match kind {
-        AssociationType::Generalization => Relationship::new_generalization(a_id, b_id),
-        AssociationType::Realization => Relationship::new_realization(a_id, b_id),
-        AssociationType::Association => Relationship::new_association(a_id, b_id),
-        AssociationType::Aggregation => Relationship::new_aggregation(a_id, b_id),
-        AssociationType::Composition => Relationship::new_composition(a_id, b_id),
-        AssociationType::Dependency => Relationship::new_dependency(a_id, b_id),
-    };
-    let rel_id = rel.base.id;
-    model.insert(ModelElement::Relationship(rel));
-
-    let diagram = model.get_diagram_mut(diagram_id).unwrap();
-    let edge_id = uml_core::EdgeId::new();
-    diagram.add_edge(edge_id, ViewEdge::new(rel_id, a_id, b_id, uml_core::LineRouting::Direct));
-
-    let mut app = UmbrelloApp::new(model, false);
-    app.active_diagram = Some(0);
-    app.current_file_path = Some(PathBuf::from("/tmp/edge-test.xmi"));
-    // Must set canvas_origin for screen_edge_paths.
-    app.last_canvas_rect =
-        Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
-    app
-}
-
 /// S3-04: All 6 relationship kinds produce edge paths whose first/last
 /// points lie on the source/target rectangle boundaries.
 #[test]
 fn edge_paths_clip_to_node_boundaries() {
+    let build = |kind: uml_core::AssociationType| -> UmbrelloApp {
+        let mut model = UmlModel::new();
+        let d = Diagram::new("Test", DiagramKind::Class);
+        let diagram_id = d.id;
+        model.add_diagram(d);
+        let cls_a = Class::new("ClassA");
+        let a_id = cls_a.base.id;
+        model.insert(ModelElement::Class(cls_a));
+        let cls_b = Class::new("ClassB");
+        let b_id = cls_b.base.id;
+        model.insert(ModelElement::Class(cls_b));
+        model
+            .get_diagram_mut(diagram_id)
+            .unwrap()
+            .add_node(a_id, ViewNode::new(a_id, Rect::new(0.0, 0.0, 100.0, 60.0)));
+        model
+            .get_diagram_mut(diagram_id)
+            .unwrap()
+            .add_node(b_id, ViewNode::new(b_id, Rect::new(300.0, 0.0, 100.0, 60.0)));
+        let rel = match kind {
+            AssociationType::Generalization => Relationship::new_generalization(a_id, b_id),
+            AssociationType::Realization => Relationship::new_realization(a_id, b_id),
+            AssociationType::Association => Relationship::new_association(a_id, b_id),
+            AssociationType::Aggregation => Relationship::new_aggregation(a_id, b_id),
+            AssociationType::Composition => Relationship::new_composition(a_id, b_id),
+            AssociationType::Dependency => Relationship::new_dependency(a_id, b_id),
+        };
+        let rel_id = rel.base.id;
+        model.insert(ModelElement::Relationship(rel));
+        model.get_diagram_mut(diagram_id).unwrap().add_edge(
+            uml_core::EdgeId::new(),
+            ViewEdge::new(rel_id, a_id, b_id, uml_core::LineRouting::Direct),
+        );
+        let mut app = UmbrelloApp::new(model, false);
+        app.active_diagram = Some(0);
+        app.current_file_path = Some(PathBuf::from("/tmp/edge-test.xmi"));
+        app.last_canvas_rect =
+            Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+        app
+    };
     for kind in [
         AssociationType::Generalization,
         AssociationType::Realization,
@@ -4079,7 +4071,7 @@ fn edge_paths_clip_to_node_boundaries() {
         AssociationType::Composition,
         AssociationType::Dependency,
     ] {
-        let app = setup_edge_diagram(kind);
+        let app = build(kind);
         let diagram = &app.model.diagrams()[0];
         let paths = app.screen_edge_paths(diagram, egui::pos2(0.0, 0.0));
         assert_eq!(paths.len(), 1, "Expected one edge path for {kind:?}");
@@ -4107,7 +4099,36 @@ fn edge_paths_clip_to_node_boundaries() {
 /// S3-05: Invalid semantic reference (non-Relationship) is skipped.
 #[test]
 fn edge_with_non_relationship_reference_is_skipped() {
-    let mut app = setup_edge_diagram(AssociationType::Association);
+    let mut model = UmlModel::new();
+    let d = Diagram::new("Test", DiagramKind::Class);
+    let diagram_id = d.id;
+    model.add_diagram(d);
+    let cls_a = Class::new("ClassA");
+    let a_id = cls_a.base.id;
+    model.insert(ModelElement::Class(cls_a));
+    let cls_b = Class::new("ClassB");
+    let b_id = cls_b.base.id;
+    model.insert(ModelElement::Class(cls_b));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(a_id, ViewNode::new(a_id, Rect::new(0.0, 0.0, 100.0, 60.0)));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(b_id, ViewNode::new(b_id, Rect::new(300.0, 0.0, 100.0, 60.0)));
+    let rel = Relationship::new_association(a_id, b_id);
+    let rel_id = rel.base.id;
+    model.insert(ModelElement::Relationship(rel));
+    model.get_diagram_mut(diagram_id).unwrap().add_edge(
+        uml_core::EdgeId::new(),
+        ViewEdge::new(rel_id, a_id, b_id, uml_core::LineRouting::Direct),
+    );
+    let mut app = UmbrelloApp::new(model, false);
+    app.active_diagram = Some(0);
+    app.current_file_path = Some(PathBuf::from("/tmp/edge-test.xmi"));
+    app.last_canvas_rect =
+        Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
     // Replace the relationship with a class.
     let rel_id = {
         let diagram = &app.model.diagrams()[0];
@@ -4128,7 +4149,36 @@ fn edge_with_non_relationship_reference_is_skipped() {
 /// S3-06: Drag preview substitutes edge endpoint bounds.
 #[test]
 fn edge_follows_drag_preview() {
-    let mut app = setup_edge_diagram(AssociationType::Generalization);
+    let mut model = UmlModel::new();
+    let d = Diagram::new("Test", DiagramKind::Class);
+    let diagram_id = d.id;
+    model.add_diagram(d);
+    let cls_a = Class::new("ClassA");
+    let a_id = cls_a.base.id;
+    model.insert(ModelElement::Class(cls_a));
+    let cls_b = Class::new("ClassB");
+    let b_id = cls_b.base.id;
+    model.insert(ModelElement::Class(cls_b));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(a_id, ViewNode::new(a_id, Rect::new(0.0, 0.0, 100.0, 60.0)));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(b_id, ViewNode::new(b_id, Rect::new(300.0, 0.0, 100.0, 60.0)));
+    let rel = Relationship::new_generalization(a_id, b_id);
+    let rel_id = rel.base.id;
+    model.insert(ModelElement::Relationship(rel));
+    model.get_diagram_mut(diagram_id).unwrap().add_edge(
+        uml_core::EdgeId::new(),
+        ViewEdge::new(rel_id, a_id, b_id, uml_core::LineRouting::Direct),
+    );
+    let mut app = UmbrelloApp::new(model, false);
+    app.active_diagram = Some(0);
+    app.current_file_path = Some(PathBuf::from("/tmp/edge-test.xmi"));
+    app.last_canvas_rect =
+        Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
     let diagram = &app.model.diagrams()[0];
     // Get source node id.
     let src_id = diagram.nodes.keys().next().copied().unwrap();
@@ -4207,7 +4257,36 @@ fn overlapping_nodes_produce_finite_paths() {
 /// S3-08: Coincident center nodes (same position) produce finite output.
 #[test]
 fn coincident_centers_produce_finite_out() {
-    let mut app = setup_edge_diagram(AssociationType::Generalization);
+    let mut model = UmlModel::new();
+    let d = Diagram::new("Test", DiagramKind::Class);
+    let diagram_id = d.id;
+    model.add_diagram(d);
+    let cls_a = Class::new("ClassA");
+    let a_id = cls_a.base.id;
+    model.insert(ModelElement::Class(cls_a));
+    let cls_b = Class::new("ClassB");
+    let b_id = cls_b.base.id;
+    model.insert(ModelElement::Class(cls_b));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(a_id, ViewNode::new(a_id, Rect::new(0.0, 0.0, 100.0, 60.0)));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(b_id, ViewNode::new(b_id, Rect::new(300.0, 0.0, 100.0, 60.0)));
+    let rel = Relationship::new_generalization(a_id, b_id);
+    let rel_id = rel.base.id;
+    model.insert(ModelElement::Relationship(rel));
+    model.get_diagram_mut(diagram_id).unwrap().add_edge(
+        uml_core::EdgeId::new(),
+        ViewEdge::new(rel_id, a_id, b_id, uml_core::LineRouting::Direct),
+    );
+    let mut app = UmbrelloApp::new(model, false);
+    app.active_diagram = Some(0);
+    app.current_file_path = Some(PathBuf::from("/tmp/edge-test.xmi"));
+    app.last_canvas_rect =
+        Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
     let diagram_id = app.model.diagrams()[0].id;
     // Move both nodes to the same position with 0-size (degenerate).
     if let Some(d) = app.model.get_diagram_mut(diagram_id) {
@@ -4231,7 +4310,36 @@ fn coincident_centers_produce_finite_out() {
 /// S3-09: Diamond placement for aggregation is outside source boundary.
 #[test]
 fn aggregation_diamond_is_outside_source_boundary() {
-    let app = setup_edge_diagram(AssociationType::Aggregation);
+    let mut model = UmlModel::new();
+    let d = Diagram::new("Test", DiagramKind::Class);
+    let diagram_id = d.id;
+    model.add_diagram(d);
+    let cls_a = Class::new("ClassA");
+    let a_id = cls_a.base.id;
+    model.insert(ModelElement::Class(cls_a));
+    let cls_b = Class::new("ClassB");
+    let b_id = cls_b.base.id;
+    model.insert(ModelElement::Class(cls_b));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(a_id, ViewNode::new(a_id, Rect::new(0.0, 0.0, 100.0, 60.0)));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(b_id, ViewNode::new(b_id, Rect::new(300.0, 0.0, 100.0, 60.0)));
+    let rel = Relationship::new_aggregation(a_id, b_id);
+    let rel_id = rel.base.id;
+    model.insert(ModelElement::Relationship(rel));
+    model.get_diagram_mut(diagram_id).unwrap().add_edge(
+        uml_core::EdgeId::new(),
+        ViewEdge::new(rel_id, a_id, b_id, uml_core::LineRouting::Direct),
+    );
+    let mut app = UmbrelloApp::new(model, false);
+    app.active_diagram = Some(0);
+    app.current_file_path = Some(PathBuf::from("/tmp/edge-test.xmi"));
+    app.last_canvas_rect =
+        Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
     let diagram = &app.model.diagrams()[0];
     let paths = app.screen_edge_paths(diagram, egui::pos2(0.0, 0.0));
     assert_eq!(paths.len(), 1);
