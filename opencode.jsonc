@@ -34,7 +34,7 @@
     },
     "explorer": {
       "mode": "subagent",
-      "model": "openai/gpt-5.6-luna",
+      "model": "deepseek/deepseek-v4-flash",
       "description": "Umbrello Rust Codebase Explorer",
       "tools": {
         "write": false,

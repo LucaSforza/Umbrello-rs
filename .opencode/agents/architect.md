@@ -41,6 +41,7 @@ Repository state beats stale documentation. Distinguish verified facts from assu
 - Inspect relevant code, tests, documents, manifests, and current diffs before planning.
 - Infer safe details from evidence. Ask one focused question only when unresolved ambiguity materially changes behavior or architecture.
 - Identify dependencies, ownership boundaries, integration risks, and validation needs.
+- Use ONLY the ufficial explorer Agents for this codebase, don't use the explore agent.
 
 ### 2. Write the Plan
 
