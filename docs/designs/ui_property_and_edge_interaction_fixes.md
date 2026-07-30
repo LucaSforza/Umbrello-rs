@@ -210,6 +210,95 @@ cargo test -p umbrello drag
 cargo test -p umbrello boundary
 ```
 
+## G4 Findings and Corrective Subtasks
+
+The first full native MCP review invalidated two original assumptions: existing XMI feature persistence did not serialize `Parameter.default_value`, and the reader created a second semantic relationship from each persisted `assocwidget`. The populated parameter editor also exposed an unbounded SidePanel sizing defect. Repository behavior overrides the earlier “no reader/writer changes expected” assumption; the cycle includes the following corrective work before G4 can approve.
+
+### S6 — Preserve parameter default values in XMI
+
+**Owned files:**
+
+- `crates/uml-io/src/xmi/reader.rs`
+- `crates/uml-io/src/xmi/writer.rs`
+
+**Dependencies:** S2F4.
+
+Write non-empty/explicit `Parameter.default_value` as the C++-compatible UML 1.2 `value` attribute. Read `value` and accept legacy `initialValue` as a fallback. Add reader, writer, and semantic round-trip tests using operation parameters with all other editable fields.
+
+**Acceptance criteria:**
+
+- `Some` default text survives write/read exactly; `None` remains absent.
+- Reader accepts both `value` and legacy `initialValue`, preferring canonical `value` when both are present.
+- Output remains loadable by C++ Umbrello conventions and does not affect attribute initial values or return parameters.
+
+**Validation:**
+
+```sh
+cargo fmt --all --check
+cargo test -p uml-io parameter_default
+cargo test -p uml-io xmi
+```
+
+### S7 — Canonical relationship/widget identity without duplication
+
+**Owned files:**
+
+- `crates/uml-io/src/xmi/reader.rs`
+- `crates/uml-io/src/xmi/writer.rs`
+
+**Dependencies:** S6.
+
+Match C++ Umbrello by writing each `assocwidget@xmi.id` as the referenced semantic relationship XMI ID instead of allocating an unrelated ID. During read, pre-register semantic relationship XMI IDs and ensure the diagram `ViewEdge` and semantic definition resolve to one `UmlId` regardless of whether the widget or pass-2 semantic resolution is encountered first.
+
+For old Rust output whose assocwidget ID differs from its semantic relationship ID, use a deterministic per-diagram ordered fallback over unclaimed semantic candidates with the same kind and directed endpoints. A candidate may be reused in another diagram, while parallel same-kind relationships between identical endpoints remain distinct by occurrence order. Only create a widget-only semantic relationship when no compatible semantic candidate exists. Never collapse relationships globally by `(kind, source, target)` alone.
+
+**Acceptance criteria:**
+
+- New writer output shares semantic/widget XMI identity and reloads one semantic relationship plus one view edge per authored edge.
+- Generalization, Realization, Association, Aggregation, Composition, and Dependency round-trip without duplication.
+- Parallel same-kind/same-endpoint relationships remain distinct.
+- One semantic relationship shown in multiple diagrams remains one model element with multiple view edges.
+- C++ shared-ID input, old Rust separate-ID input, semantic-only input, and genuinely widget-only foreign input all follow deterministic behavior.
+- Repeated save/reload does not grow relationship count and the real corpus still parses.
+
+**Validation:**
+
+```sh
+cargo fmt --all --check
+cargo test -p uml-io relationship_identity
+cargo test -p uml-io round_trip_with
+cargo test -p uml-io --test test_real_corpus
+```
+
+### S8 — Bound and scroll the Properties inspector
+
+**Owned files:**
+
+- `apps/umbrello/src/app.rs`
+- `apps/umbrello/src/property_editor.rs`
+- `apps/umbrello/src/tests.rs`
+
+**Dependencies:** S2F3.
+
+Keep the right SidePanel before CentralPanel, give it a bounded resizable width, wrap the inspector in a vertical `ScrollArea`, constrain text edits, and split dense parameter controls into narrow rows so content cannot force the panel to consume the canvas.
+
+**Acceptance criteria:**
+
+- At the default 1024x768 viewport with a populated classifier draft, the canvas retains a useful non-empty width of at least 300 logical pixels.
+- At 1741x1306 the same draft leaves at least 600 logical pixels for the canvas and all classifier controls remain reachable by scrolling.
+- Properties clicks preserve selection and empty-canvas clicks still clear it.
+- Attribute/operation/parameter edits, Apply/Revert, relationship fields, and multi-frame draft persistence remain functional.
+
+**Validation:**
+
+```sh
+cargo fmt --all --check
+cargo test -p umbrello property
+cargo test -p umbrello classifier
+cargo test -p umbrello layout
+cargo test -p umbrello background_click
+```
+
 ## Integration and Review Gates
 
 ### G1 — Core gate after S1
@@ -241,7 +330,7 @@ Because static semantic snapshots cannot prove arrowhead visibility or intermedi
 
 ## Completion Criteria
 
-- S1-S3 and accepted fixes are committed with exact ownership.
+- S1-S8 and accepted fixes are committed with exact ownership.
 - G3 passes with no warnings or failures.
 - The automatic native MCP QA artifacts exist and the reviewer approves G4.
 - `AGENTS.md` records the durable behavior, implementation locations, verified commands, and remaining limitations.
