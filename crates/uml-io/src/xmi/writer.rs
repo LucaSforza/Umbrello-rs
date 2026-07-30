@@ -4,7 +4,7 @@
 //! Uses `original_xmi_id` when available for XMI IDs, generates new IDs
 //! (prefixed `rs`) for native elements.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
@@ -23,6 +23,9 @@ pub enum XmiWriteError {
     /// I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// Two different model elements have the same `original_xmi_id`.
+    #[error("duplicate original XMI id: {0}")]
+    DuplicateOriginalId(String),
 }
 
 /// XMI writer that serializes a `UmlModel` to XMI 1.2 XML.
@@ -43,6 +46,10 @@ pub struct XmiWriter<W: Write> {
     writer: XmlWriter<W>,
     /// UmlId → XMI ID string (built during pre-assign and used during writing).
     id_map: HashMap<UmlId, String>,
+    /// All XMI IDs already reserved (preserved original_xmi_id values or
+    /// previously generated `rs`-prefixed IDs).  Used to prevent collisions
+    /// between preserved IDs and newly generated IDs.
+    reserved_ids: HashSet<String>,
     /// Counter for generating new XMI IDs.
     next_id: u64,
 }
@@ -55,6 +62,7 @@ impl<W: Write> XmiWriter<W> {
         Self {
             writer,
             id_map: HashMap::new(),
+            reserved_ids: HashSet::new(),
             next_id: 0,
         }
     }
@@ -68,7 +76,7 @@ impl<W: Write> XmiWriter<W> {
     /// Write the full XMI document for the given model.
     pub fn write_document(&mut self, model: &UmlModel) -> Result<(), XmiWriteError> {
         // Phase 0: pre-assign XMI IDs to all elements
-        self.pre_assign_ids(model);
+        self.pre_assign_ids(model)?;
 
         // 1. XML declaration
         self.writer
@@ -117,26 +125,52 @@ impl<W: Write> XmiWriter<W> {
     // ─── ID management ─────────────────────────────────────────────────
 
     /// Pre-assign XMI IDs for every element in the model.
-    fn pre_assign_ids(&mut self, model: &UmlModel) {
-        for (id, elem) in model.iter() {
-            let orig = elem.base().original_xmi_id.as_deref();
-            self.get_or_create_xmi_id(id, orig);
+    ///
+    /// Uses a two-pass strategy to guarantee that every semantic element gets
+    /// a unique xmi.id:
+    ///
+    /// 1. **Reserve preserved IDs** — for elements that carry an
+    ///    `original_xmi_id` (from a previous round-trip), insert that string
+    ///    into the reserved set.  If two distinct elements share the same
+    ///    preserved ID this pass detects it and returns
+    ///    `DuplicateOriginalId`.
+    ///
+    /// 2. **Assign generated IDs** — for elements without an
+    ///    `original_xmi_id`, generate an `rs`-prefixed ID that is guaranteed
+    ///    not to collide with any reserved value.
+    fn pre_assign_ids(&mut self, model: &UmlModel) -> Result<(), XmiWriteError> {
+        // Pass 1 — reserve all original_xmi_ids and detect duplicates.
+        for (_, elem) in model.iter() {
+            if let Some(orig) = elem.base().original_xmi_id.as_deref() {
+                if !self.reserved_ids.insert(orig.to_string()) {
+                    return Err(XmiWriteError::DuplicateOriginalId(orig.to_string()));
+                }
+                self.id_map.insert(elem.base().id, orig.to_string());
+            }
         }
+
+        // Pass 2 — assign collision-free generated IDs.
+        for (id, elem) in model.iter() {
+            if elem.base().original_xmi_id.is_none() {
+                let xmi_id = self.next_unreserved_id();
+                self.id_map.insert(id, xmi_id);
+            }
+        }
+        Ok(())
     }
 
-    /// Get or create the XMI string ID for a `UmlId`.
-    fn get_or_create_xmi_id(&mut self, uml_id: UmlId, original: Option<&str>) -> String {
-        if let Some(cached) = self.id_map.get(&uml_id) {
-            return cached.clone();
-        }
-        let xmi_id = if let Some(orig) = original {
-            orig.to_string()
-        } else {
+    /// Return a fresh `rs`-prefixed XMI ID that is not in `reserved_ids`,
+    /// and add it to the reserved set.
+    fn next_unreserved_id(&mut self) -> String {
+        loop {
             self.next_id += 1;
-            format!("rs{:08x}", self.next_id)
-        };
-        self.id_map.insert(uml_id, xmi_id.clone());
-        xmi_id
+            let candidate = format!("rs{:08x}", self.next_id);
+            // HashSet::insert returns true when the value was NOT already
+            // present — i.e. we successfully claimed this candidate.
+            if self.reserved_ids.insert(candidate.clone()) {
+                return candidate;
+            }
+        }
     }
 
     /// Look up the XMI ID for a `UmlId` (panics if not found — use after pre-assign).
@@ -148,9 +182,9 @@ impl<W: Write> XmiWriter<W> {
     }
 
     /// Generate a fresh XMI ID for sub-elements that have no corresponding UmlId.
+    /// The returned ID is guaranteed not to collide with any reserved value.
     fn gen_sub_id(&mut self) -> String {
-        self.next_id += 1;
-        format!("rs{:08x}", self.next_id)
+        self.next_unreserved_id()
     }
 
     /// Get a type reference for use as the `type` attribute value in XMI.
@@ -190,10 +224,9 @@ impl<W: Write> XmiWriter<W> {
             .filter(|id| matches!(model.get(*id), Some(ModelElement::Relationship(_))))
             .collect();
 
-        let model_xmi = root.map(|id| self.lookup_xmi_id(id)).unwrap_or_else(|| {
-            self.next_id += 1;
-            format!("rs{:08x}", self.next_id)
-        });
+        let model_xmi = root
+            .map(|id| self.lookup_xmi_id(id))
+            .unwrap_or_else(|| self.gen_sub_id());
         let model_name = root
             .and_then(|id| model.get(id))
             .map(|e| e.name().to_string())
@@ -1595,32 +1628,21 @@ mod tests {
         assert_eq!(restored.diagrams()[0].node_count(), 1);
     }
 
-    /// Regression: when a model element has a preserved original_xmi_id that
-    /// matches the `rs`-prefix pattern (from a previous Umbrello-RS save), and
-    /// no root Package exists, the UML:Model wrapper must not reuse that same
-    /// xmi.id value.  The writer's `pre_assign_ids` never increments `next_id`
-    /// for elements with an original_xmi_id, so the subsequently generated
-    /// UML:Model wrapper ID aliases the element's ID — a collision that makes
-    /// the output unparseable.
-    ///
-    /// This is a RED TDD test: it deliberately exercises the collision and
-    /// asserts that the reader can still parse the output.  It will fail on
-    /// the current production code.  No production fix is applied here.
+    /// Regression (GREEN): when a model element has a preserved original_xmi_id
+    /// that matches the `rs`-prefix pattern and no root Package exists, the
+    /// UML:Model wrapper must use a different xmi.id.  The fix uses a
+    /// collision-aware reserved-ID set so that generated IDs never alias
+    /// preserved values.
     #[test]
     fn generated_xmi_ids_do_not_collide() {
-        // Model with one Class that has a preserved rs-prefixed ID and NO root
-        // Package.  The writer's `find_root_model_id()` returns None, forcing
-        // `write_model_wrapper` to generate a fresh ID — which aliases the
-        // Class's ID because next_id never advanced during pre-assign.
         let mut model = UmlModel::new();
         let mut cls = Class::new("MyClass");
         cls.base.original_xmi_id = Some("rs00000001".into());
         let cls_id = cls.base.id;
         model.insert(ModelElement::Class(cls));
 
-        // Add a diagram with a classwidget so we also verify that widget
-        // xmi.id references (which share the model element ID) are NOT
-        // treated as new semantic definitions by the reader.
+        // Diagram with a classwidget to verify widget references (which
+        // share the model element ID) are not treated as new definitions.
         let mut diagram = uml_core::Diagram::new("Main", uml_core::DiagramKind::Class);
         diagram.add_node(
             cls_id,
@@ -1630,33 +1652,52 @@ mod tests {
 
         let xml = write_to_string(&model);
 
-        // Verify widget reference pattern is present (classwidget shares the
-        // class's xmi.id — this is a valid reference, not a definition).
-        assert!(xml.contains("classwidget"), "classwidget should appear in output");
+        // The class's preserved ID appears only in its own tag and in the
+        // classwidget reference — NOT in the UML:Model wrapper.
+        assert_eq!(
+            xml.matches("xmi.id=\"rs00000001\"").count(),
+            2,
+            "rs00000001 should appear exactly twice: once for UML:Class and once for classwidget"
+        );
 
-        // The critical assertion: the output must be parseable.  A collision
-        // between UML:Model xmi.id and UML:Class xmi.id causes the reader to
-        // fail with XmiParseError::DuplicateId.
+        // UML:Model wrapper must use a different ID (rs00000002 is the next
+        // unreserved value after skipping rs00000001).
+        assert!(
+            xml.contains("<UML:Model xmi.id=\"rs00000002\""),
+            "UML:Model should get rs00000002 (first unreserved after rs00000001)"
+        );
+
+        // Round-trip must succeed.
         let mut restored = UmlModel::new();
         let mut reader = XmiReader::new();
-        let result = reader.read_from(xml.as_bytes(), &mut restored);
-
-        assert!(
-            result.is_ok(),
-            "xmi.id collision detected between UML:Model wrapper and a semantic \
-             element. The writer gave both the ID 'rs00000001' because next_id \
-             never advanced during pre_assign_ids (all elements had original_xmi_id). \
-             Fix: increment next_id past already-assigned original IDs during \
-             pre-assign.\nReader error: {:?}\nXML:\n{}",
-            result.err(),
-            xml
-        );
-
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
         reader.resolve(&mut restored).unwrap();
-        assert!(
-            restored.iter().any(|(_, e)| e.name() == "MyClass"),
-            "MyClass must survive round-trip"
-        );
-        assert_eq!(restored.diagrams().len(), 1, "diagram must survive");
+        assert!(restored.iter().any(|(_, e)| e.name() == "MyClass"));
+        assert_eq!(restored.diagrams().len(), 1);
+    }
+
+    /// Two distinct semantic elements must not share the same original_xmi_id.
+    /// The writer detects this and returns `XmiWriteError::DuplicateOriginalId`.
+    #[test]
+    fn duplicate_original_xmi_id_errors() {
+        let mut model = UmlModel::new();
+        let mut cls_a = Class::new("ClassA");
+        cls_a.base.original_xmi_id = Some("dup-id".into());
+        model.insert(ModelElement::Class(cls_a));
+        let mut cls_b = Class::new("ClassB");
+        cls_b.base.original_xmi_id = Some("dup-id".into());
+        model.insert(ModelElement::Class(cls_b));
+
+        let mut output = Vec::new();
+        let mut writer = XmiWriter::new(&mut output);
+        let result = writer.write_document(&model);
+
+        match result {
+            Err(XmiWriteError::DuplicateOriginalId(id)) => {
+                assert_eq!(id, "dup-id", "error must report the duplicate ID");
+            },
+            Err(other) => panic!("expected DuplicateOriginalId, got: {other}"),
+            Ok(()) => panic!("expected DuplicateOriginalId error, write succeeded"),
+        }
     }
 }
