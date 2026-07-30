@@ -4020,6 +4020,7 @@ fn rect_exit_point_degenerate_cases() {
 }
 
 /// S3-03: A helper to set up diagram with two nodes and an edge of a given kind.
+#[allow(dead_code)]
 fn setup_edge_diagram(kind: uml_core::AssociationType) -> UmbrelloApp {
     let mut model = UmlModel::new();
     let d = Diagram::new("Test", DiagramKind::Class);
@@ -4049,7 +4050,6 @@ fn setup_edge_diagram(kind: uml_core::AssociationType) -> UmbrelloApp {
         AssociationType::Aggregation => Relationship::new_aggregation(a_id, b_id),
         AssociationType::Composition => Relationship::new_composition(a_id, b_id),
         AssociationType::Dependency => Relationship::new_dependency(a_id, b_id),
-        _ => Relationship::new_association(a_id, b_id),
     };
     let rel_id = rel.base.id;
     model.insert(ModelElement::Relationship(rel));
