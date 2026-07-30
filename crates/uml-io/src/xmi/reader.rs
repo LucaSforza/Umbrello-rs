@@ -3835,4 +3835,79 @@ mod tests {
         let errors = model.validate_references();
         assert!(errors.is_empty(), "dangling references: {:?}", errors);
     }
+
+    // ─── Legacy explicit origin linepoint (G3-preclosure) ─────────────
+
+    /// An explicitly serialized `(0, 0)` startpoint together with a nonzero
+    /// endpoint must be preserved as real waypoints after parse+resolve.
+    /// This distinguishes a legacy direct edge with explicit zero coordinates
+    /// from a missing `<linepath>` (which produces an empty waypoint vector).
+    #[test]
+    fn legacy_explicit_origin_linepoint_is_preserved() {
+        let xmi = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="A"/>
+    <UML:Class xmi.id="C2" name="B"/>
+    <UML:Association xmi.id="R1">
+     <UML:Association.connection>
+      <UML:AssociationEnd xmi.id="E1" type="C1"/>
+      <UML:AssociationEnd xmi.id="E2" type="C2"/>
+     </UML:Association.connection>
+    </UML:Association>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+ <XMI.extension>
+  <diagrams>
+   <diagram name="D1">
+    <widgets>
+     <classwidget xmi.id="C1" x="0" y="0" width="100" height="60"/>
+     <classwidget xmi.id="C2" x="300" y="0" width="100" height="60"/>
+    </widgets>
+    <associations>
+     <assocwidget xmi.id="R1" widgetaid="C1" widgetbid="C2" type="503">
+      <linepath><startpoint startx="0" starty="0"/><endpoint endx="100" endy="0"/></linepath>
+     </assocwidget>
+    </associations>
+   </diagram>
+  </diagrams>
+ </XMI.extension>
+</XMI>"#;
+
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xmi.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        assert_eq!(model.diagrams().len(), 1, "exactly 1 diagram");
+        let diag = &model.diagrams()[0];
+        assert_eq!(diag.edges.len(), 1, "exactly 1 edge");
+        let (_edge_id, edge) = diag.edges.iter().next().unwrap();
+
+        // The explicit (0,0) startpoint must be a real waypoint,
+        // not stripped as if the linepath were missing.
+        assert_eq!(
+            edge.waypoints.len(),
+            2,
+            "expected 2 waypoints from explicit startpoint+endpoint"
+        );
+        assert_eq!(
+            edge.waypoints[0],
+            uml_core::Point::new(0.0, 0.0),
+            "explicit (0,0) startpoint must survive"
+        );
+        assert_eq!(
+            edge.waypoints[1],
+            uml_core::Point::new(100.0, 0.0),
+            "explicit endpoint must survive"
+        );
+
+        // No dangling references.
+        let errors = model.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
 }

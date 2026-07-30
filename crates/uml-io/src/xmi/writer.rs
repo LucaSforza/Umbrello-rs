@@ -1880,11 +1880,11 @@ mod tests {
         assert!(errors.is_empty(), "dangling references: {:?}", errors);
     }
 
-    /// An element with multiple parents (root + non-root Package) must be
-    /// emitted exactly once: the root (UML:Model wrapper) wins as canonical
-    /// owner.  The non-root Package's `write_package` must skip the child.
+    /// An element with multiple parents must be emitted exactly once: the
+    /// first parent in repository insertion order is the canonical owner
+    /// (deterministic first-parent policy, see `is_canonical_owner`).
     #[test]
-    fn package_containment_multiple_parents_root_wins() {
+    fn package_containment_multiple_parents_first_parent_is_canonical() {
         let mut model = UmlModel::new();
         let root_pkg = Package::new("UML Model");
         let root_id = root_pkg.base.id;
@@ -1895,7 +1895,8 @@ mod tests {
         model.insert(ModelElement::Package(pkg));
         model.add_to_package(root_id, pkg_id).unwrap();
 
-        // C belongs to BOTH root and P.
+        // C belongs to BOTH root and P.  The root was added first,
+        // so it is the first parent and therefore canonical.
         let cls = Class::new("C");
         let cls_id = cls.base.id;
         model.insert(ModelElement::Class(cls));
@@ -1904,11 +1905,12 @@ mod tests {
 
         let xml = write_to_string(&model);
 
-        // C must appear exactly once (wrapper level, not also inside P).
+        // C must appear exactly once (inside the root Package, its first
+        // parent — not also inside P).
         assert_eq!(
             xml.matches("name=\"C\"").count(),
             1,
-            "C must appear exactly once (root wins as canonical owner)"
+            "C must appear exactly once (root is first parent, hence canonical)"
         );
 
         // Round-trip must succeed (no DuplicateId).
