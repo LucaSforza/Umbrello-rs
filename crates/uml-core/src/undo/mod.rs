@@ -6,7 +6,7 @@
 
 pub mod commands;
 
-pub use commands::{CreateDiagram, CreateEdge, UpdateRelationship};
+pub use commands::{CreateDiagram, CreateEdge, UpdateClassifierFeatures, UpdateRelationship};
 
 use std::fmt::Debug;
 

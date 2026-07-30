@@ -1,6 +1,6 @@
 //! Concrete command implementations for model mutations.
 
-use crate::elements::{ModelElement, Relationship};
+use crate::elements::{ClassifierData, ModelElement, Relationship};
 use crate::id::UmlId;
 use crate::repository::UmlModel;
 use crate::types::{AssociationType, Visibility};
@@ -630,6 +630,115 @@ fn replace_relationship(
     Ok(())
 }
 
+/// Command to replace the editable classifier features of an existing classifier.
+///
+/// Classifier identity, element base fields, and templates are preserved.
+/// The command may change only `attributes` and `operations`.
+/// Follows the optimistic snapshot pattern used by [`UpdateRelationship`]:
+/// execute/undo verify the currently stored classifier data matches the
+/// expected snapshot before replacing it.
+///
+/// # Errors
+///
+/// Construction fails when:
+/// - `classifier_id` is absent
+/// - The element is not a classifier (Class, Interface, Enum, or Datatype)
+/// - The replacement's `templates` differ from the current templates
+///
+/// Execute/undo fail atomically when:
+/// - The element is missing or no longer a classifier
+/// - The classifier data was modified externally (stale snapshot)
+/// - The command has already been executed / not yet executed
+#[derive(Debug)]
+pub struct UpdateClassifierFeatures {
+    element_id: UmlId,
+    old: ClassifierData,
+    new: ClassifierData,
+    applied: bool,
+    description: String,
+}
+
+impl UpdateClassifierFeatures {
+    /// Create a command for replacing one classifier's attributes and operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `classifier_id` is absent, the element is not a
+    /// classifier, or `replacement.templates` differs from the current templates.
+    pub fn new(
+        model: &UmlModel,
+        classifier_id: UmlId,
+        replacement: ClassifierData,
+    ) -> Result<Self, CommandError> {
+        let current = model
+            .get(classifier_id)
+            .ok_or(CommandError::ElementNotFound(classifier_id))?;
+        let old = current
+            .classifier_data()
+            .ok_or_else(|| CommandError::InvalidOperation("element is not a classifier".into()))?
+            .clone();
+        if replacement.templates != old.templates {
+            return Err(CommandError::InvalidOperation(
+                "classifier templates cannot be changed through this command".into(),
+            ));
+        }
+        Ok(Self {
+            element_id: classifier_id,
+            description: format!("Update classifier '{}'", current.name()),
+            old,
+            new: replacement,
+            applied: false,
+        })
+    }
+}
+
+impl Command for UpdateClassifierFeatures {
+    fn execute(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        if self.applied {
+            return Err(CommandError::InvalidOperation(
+                "UpdateClassifierFeatures already executed".into(),
+            ));
+        }
+        replace_classifier_features(model, self.element_id, &self.old, &self.new)?;
+        self.applied = true;
+        Ok(())
+    }
+
+    fn undo(&mut self, model: &mut UmlModel) -> Result<(), CommandError> {
+        if !self.applied {
+            return Err(CommandError::InvalidOperation(
+                "UpdateClassifierFeatures has not been executed".into(),
+            ));
+        }
+        replace_classifier_features(model, self.element_id, &self.new, &self.old)?;
+        self.applied = false;
+        Ok(())
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+fn replace_classifier_features(
+    model: &mut UmlModel,
+    id: UmlId,
+    expected: &ClassifierData,
+    replacement: &ClassifierData,
+) -> Result<(), CommandError> {
+    let element = model.get_mut(id).ok_or(CommandError::ElementNotFound(id))?;
+    let current = element
+        .classifier_data_mut()
+        .ok_or_else(|| CommandError::InvalidOperation("element is not a classifier".into()))?;
+    if current != expected {
+        return Err(CommandError::InvalidOperation(
+            "classifier features were modified externally".into(),
+        ));
+    }
+    *current = replacement.clone();
+    Ok(())
+}
+
 /// Atomically create a model element and its visual node in a diagram.
 ///
 /// The constructor validates the diagram and IDs before the command is added
@@ -1112,8 +1221,11 @@ impl Command for CreateEdge {
 mod tests {
     use super::*;
     use crate::diagram::{Diagram, DiagramKind, Rect, ViewNode};
-    use crate::elements::{Class, Package};
-    use crate::types::AssociationType;
+    use crate::elements::{
+        Attribute, Class, Datatype, Enum, Interface, Operation, Package, Parameter,
+        TemplateParameter, TypeReference,
+    };
+    use crate::types::{AssociationType, ParameterDirection};
 
     fn same_diagram(left: &Diagram, right: &Diagram) -> bool {
         left.id == right.id
@@ -1694,5 +1806,354 @@ mod tests {
         let undone = model.get(relationship_id).unwrap().clone();
         assert!(command.undo(&mut model).is_err());
         assert_eq!(model.get(relationship_id).unwrap(), &undone);
+    }
+
+    // ── UpdateClassifierFeatures: CMD-16 through CMD-27 ────────────
+
+    fn classifier_fixture() -> (UmlModel, UmlId) {
+        let mut model = UmlModel::new();
+        let mut cls = Class::new("Person");
+        cls.classifier.add_attribute(Attribute {
+            name: "name".into(),
+            type_ref: TypeReference::primitive("String"),
+            visibility: Visibility::Private,
+            initial_value: None,
+            is_static: false,
+        });
+        cls.classifier.add_operation(Operation {
+            name: "getName".into(),
+            return_type: TypeReference::primitive("String"),
+            parameters: vec![],
+            visibility: Visibility::Public,
+            is_static: false,
+            is_abstract: false,
+            is_virtual: true,
+        });
+        let id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+        (model, id)
+    }
+
+    fn rich_classifier_data() -> ClassifierData {
+        ClassifierData {
+            attributes: vec![
+                Attribute {
+                    name: "count".into(),
+                    type_ref: TypeReference::primitive("int"),
+                    visibility: Visibility::Private,
+                    initial_value: Some("0".into()),
+                    is_static: true,
+                },
+                Attribute {
+                    name: "label".into(),
+                    type_ref: TypeReference::unspecified(),
+                    visibility: Visibility::Public,
+                    initial_value: None,
+                    is_static: false,
+                },
+            ],
+            operations: vec![
+                Operation {
+                    name: "increment".into(),
+                    return_type: TypeReference::primitive("void"),
+                    parameters: vec![Parameter {
+                        name: "delta".into(),
+                        type_ref: TypeReference::primitive("int"),
+                        direction: ParameterDirection::In,
+                        default_value: Some("1".into()),
+                    }],
+                    visibility: Visibility::Public,
+                    is_static: false,
+                    is_abstract: false,
+                    is_virtual: false,
+                },
+                Operation {
+                    name: "reset".into(),
+                    return_type: TypeReference::unspecified(),
+                    parameters: vec![],
+                    visibility: Visibility::Protected,
+                    is_static: true,
+                    is_abstract: false,
+                    is_virtual: false,
+                },
+            ],
+            templates: vec![],
+        }
+    }
+
+    #[test]
+    fn update_classifier_features_constructs_for_all_classifier_types() {
+        let mut model = UmlModel::new();
+        let cls_el = ModelElement::Class(Class::new("C"));
+        let cls_id = cls_el.id();
+        model.insert(cls_el);
+        let iface_el = ModelElement::Interface(Interface::new("I"));
+        let iface_id = iface_el.id();
+        model.insert(iface_el);
+        let enum_el = ModelElement::Enum(Enum::new("E"));
+        let enum_id = enum_el.id();
+        model.insert(enum_el);
+        let dt_el = ModelElement::Datatype(Datatype::new("D"));
+        let dt_id = dt_el.id();
+        model.insert(dt_el);
+
+        let data = ClassifierData::new();
+        for &cid in &[cls_id, iface_id, enum_id, dt_id] {
+            let cmd = UpdateClassifierFeatures::new(&model, cid, data.clone());
+            assert!(cmd.is_ok(), "should accept {cid}");
+        }
+    }
+
+    #[test]
+    fn update_classifier_features_rejects_missing_id() {
+        let model = UmlModel::new();
+        let result = UpdateClassifierFeatures::new(&model, UmlId::new(), ClassifierData::new());
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CommandError::ElementNotFound(_))));
+    }
+
+    #[test]
+    fn update_classifier_features_rejects_non_classifier() {
+        let mut model = UmlModel::new();
+        let pkg = ModelElement::Package(Package::new("Pkg"));
+        let pkg_id = pkg.id();
+        model.insert(pkg);
+        let result = UpdateClassifierFeatures::new(&model, pkg_id, ClassifierData::new());
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CommandError::InvalidOperation(_))));
+    }
+
+    #[test]
+    fn update_classifier_features_rejects_template_change() {
+        let (model, id) = classifier_fixture();
+        let mut modified = ClassifierData::new();
+        modified.templates.push(TemplateParameter {
+            name: "T".into(),
+            constraint: None,
+        });
+        let result = UpdateClassifierFeatures::new(&model, id, modified);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CommandError::InvalidOperation(_))));
+    }
+
+    #[test]
+    fn update_classifier_features_execute_replaces_features() {
+        let (mut model, id) = classifier_fixture();
+        let replacement = rich_classifier_data();
+        let before = model.get(id).unwrap().classifier_data().unwrap().clone();
+
+        let mut cmd = UpdateClassifierFeatures::new(&model, id, replacement.clone()).unwrap();
+        cmd.execute(&mut model).unwrap();
+
+        let current = model.get(id).unwrap().classifier_data().unwrap();
+        assert_eq!(current, &replacement, "features should match replacement");
+        assert_ne!(current, &before, "features should differ from original");
+    }
+
+    #[test]
+    fn update_classifier_features_undo_restores_original() {
+        let (mut model, id) = classifier_fixture();
+        let before = model.get(id).unwrap().classifier_data().unwrap().clone();
+
+        let mut cmd = UpdateClassifierFeatures::new(&model, id, rich_classifier_data()).unwrap();
+        cmd.execute(&mut model).unwrap();
+        cmd.undo(&mut model).unwrap();
+
+        let current = model.get(id).unwrap().classifier_data().unwrap();
+        assert_eq!(current, &before, "undo should restore original features");
+    }
+
+    #[test]
+    fn update_classifier_features_full_roundtrip() {
+        let (mut model, id) = classifier_fixture();
+        let replacement = rich_classifier_data();
+        let original = model.get(id).unwrap().classifier_data().unwrap().clone();
+
+        let mut cmd = UpdateClassifierFeatures::new(&model, id, replacement.clone()).unwrap();
+
+        // Execute
+        cmd.execute(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().classifier_data().unwrap(), &replacement);
+
+        // Undo
+        cmd.undo(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().classifier_data().unwrap(), &original);
+
+        // Re-execute (redo)
+        cmd.execute(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().classifier_data().unwrap(), &replacement);
+    }
+
+    #[test]
+    fn update_classifier_features_rejects_stale_snapshot_on_execute() {
+        let (mut model, id) = classifier_fixture();
+
+        let mut cmd = UpdateClassifierFeatures::new(&model, id, rich_classifier_data()).unwrap();
+
+        // Externally modify features
+        if let Some(data) = model.get_mut(id).unwrap().classifier_data_mut() {
+            data.attributes.push(Attribute {
+                name: "sneaky".into(),
+                type_ref: TypeReference::primitive("int"),
+                visibility: Visibility::Public,
+                initial_value: None,
+                is_static: false,
+            });
+        }
+
+        // Execute should fail because snapshot is stale
+        let result = cmd.execute(&mut model);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CommandError::InvalidOperation(_))));
+    }
+
+    #[test]
+    fn update_classifier_features_rejects_stale_snapshot_on_undo() {
+        let (mut model, id) = classifier_fixture();
+        let replacement = rich_classifier_data();
+
+        let mut cmd = UpdateClassifierFeatures::new(&model, id, replacement.clone()).unwrap();
+        cmd.execute(&mut model).unwrap();
+
+        // Externally modify features after execute
+        if let Some(data) = model.get_mut(id).unwrap().classifier_data_mut() {
+            data.operations.push(Operation {
+                name: "hack".into(),
+                return_type: TypeReference::unspecified(),
+                parameters: vec![],
+                visibility: Visibility::Private,
+                is_static: false,
+                is_abstract: false,
+                is_virtual: false,
+            });
+        }
+
+        // Undo should fail because snapshot is stale
+        let result = cmd.undo(&mut model);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CommandError::InvalidOperation(_))));
+    }
+
+    #[test]
+    fn update_classifier_features_rejects_repeated_execute() {
+        let (mut model, id) = classifier_fixture();
+
+        let mut cmd = UpdateClassifierFeatures::new(&model, id, rich_classifier_data()).unwrap();
+        cmd.execute(&mut model).unwrap();
+        let applied = model.get(id).unwrap().classifier_data().unwrap().clone();
+
+        // Second execute must fail without mutation
+        assert!(cmd.execute(&mut model).is_err());
+        assert_eq!(model.get(id).unwrap().classifier_data().unwrap(), &applied);
+    }
+
+    #[test]
+    fn update_classifier_features_rejects_undo_without_execute() {
+        let (model, id) = classifier_fixture();
+        let data = rich_classifier_data();
+
+        // Take ownership of cmd without executing
+        let mut cmd = UpdateClassifierFeatures::new(&model, id, data).unwrap();
+        let mut model = model;
+        assert!(cmd.undo(&mut model).is_err());
+        assert!(matches!(cmd.undo(&mut model), Err(CommandError::InvalidOperation(_))));
+    }
+
+    #[test]
+    fn update_classifier_features_preserves_all_field_values_across_roundtrip() {
+        let (mut model, id) = classifier_fixture();
+        let replacement = rich_classifier_data();
+
+        let mut cmd = UpdateClassifierFeatures::new(&model, id, replacement.clone()).unwrap();
+
+        // Execute
+        cmd.execute(&mut model).unwrap();
+        let after_execute = model.get(id).unwrap().classifier_data().unwrap().clone();
+
+        // Verify all attribute fields
+        assert_eq!(after_execute.attributes.len(), 2);
+        assert_eq!(after_execute.attributes[0].name, "count");
+        assert_eq!(after_execute.attributes[0].type_ref, TypeReference::primitive("int"));
+        assert_eq!(after_execute.attributes[0].visibility, Visibility::Private);
+        assert_eq!(after_execute.attributes[0].initial_value, Some("0".to_string()));
+        assert!(after_execute.attributes[0].is_static);
+
+        assert_eq!(after_execute.attributes[1].name, "label");
+        assert_eq!(after_execute.attributes[1].type_ref, TypeReference::unspecified());
+        assert_eq!(after_execute.attributes[1].visibility, Visibility::Public);
+        assert_eq!(after_execute.attributes[1].initial_value, None);
+        assert!(!after_execute.attributes[1].is_static);
+
+        // Verify all operation and parameter fields
+        assert_eq!(after_execute.operations.len(), 2);
+        assert_eq!(after_execute.operations[0].name, "increment");
+        assert_eq!(after_execute.operations[0].return_type, TypeReference::primitive("void"));
+        assert_eq!(after_execute.operations[0].visibility, Visibility::Public);
+        assert!(!after_execute.operations[0].is_static);
+        assert!(!after_execute.operations[0].is_abstract);
+        assert!(!after_execute.operations[0].is_virtual);
+        assert_eq!(after_execute.operations[0].parameters.len(), 1);
+        assert_eq!(after_execute.operations[0].parameters[0].name, "delta");
+        assert_eq!(
+            after_execute.operations[0].parameters[0].type_ref,
+            TypeReference::primitive("int")
+        );
+        assert_eq!(after_execute.operations[0].parameters[0].direction, ParameterDirection::In);
+        assert_eq!(after_execute.operations[0].parameters[0].default_value, Some("1".to_string()));
+
+        assert_eq!(after_execute.operations[1].name, "reset");
+        assert_eq!(after_execute.operations[1].return_type, TypeReference::unspecified());
+        assert_eq!(after_execute.operations[1].visibility, Visibility::Protected);
+        assert!(after_execute.operations[1].is_static);
+
+        // Verify templates were preserved (empty in original fixture, empty in replacement)
+        assert!(after_execute.templates.is_empty());
+
+        // Undo and verify original values restored
+        cmd.undo(&mut model).unwrap();
+        let after_undo = model.get(id).unwrap().classifier_data().unwrap().clone();
+        assert_eq!(after_undo.attributes.len(), 1);
+        assert_eq!(after_undo.attributes[0].name, "name");
+        assert_eq!(after_undo.operations.len(), 1);
+        assert_eq!(after_undo.operations[0].name, "getName");
+
+        // Re-execute and verify replacement restored
+        cmd.execute(&mut model).unwrap();
+        let after_redo = model.get(id).unwrap().classifier_data().unwrap().clone();
+        assert_eq!(after_redo, replacement);
+    }
+
+    #[test]
+    fn update_classifier_features_works_through_history() {
+        let mut model = UmlModel::new();
+        let cls = Class::new("Service");
+        let id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+
+        let mut history = crate::undo::History::new(10);
+        let replacement = ClassifierData {
+            attributes: vec![Attribute {
+                name: "port".into(),
+                type_ref: TypeReference::primitive("u16"),
+                visibility: Visibility::Private,
+                initial_value: Some("8080".into()),
+                is_static: false,
+            }],
+            operations: vec![],
+            templates: vec![],
+        };
+
+        let cmd = UpdateClassifierFeatures::new(&model, id, replacement.clone()).unwrap();
+        history.execute(Box::new(cmd), &mut model).unwrap();
+
+        assert_eq!(model.get(id).unwrap().classifier_data().unwrap(), &replacement);
+
+        history.undo(&mut model).unwrap();
+        let after_undo = model.get(id).unwrap().classifier_data().unwrap();
+        assert!(after_undo.attributes.is_empty());
+        assert!(after_undo.operations.is_empty());
+
+        history.redo(&mut model).unwrap();
+        assert_eq!(model.get(id).unwrap().classifier_data().unwrap(), &replacement);
     }
 }
