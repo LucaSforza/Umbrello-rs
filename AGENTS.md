@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 464 tests passing across 5 crates. The core domain model covers 11 UML element types. The GUI application (egui/eframe) renders partitioned class boxes, Component/Node/Artifact deployment shapes, and boundary-anchored UML relationship notation; uses a project-first XMI workflow; creates and switches among Class, Use Case, Component, and Deployment diagrams; filters authoring tools by diagram kind; provides a clickable/reusable model browser and bounded, scrollable relationship-aware property editor; authors classifier attributes, operations, and parameters through reversible drafts; supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan; writer-assigned XMI IDs are document-wide collision-safe; selected nodes support cumulative native mouse drag with live attached-edge previews, one command on release, and no history for no-motion clicks. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and semantic targets for projects, diagrams, browser elements, nodes, edges, properties, classifier features, and history.
+**Current state:** 469 tests passing across 5 crates. The core domain model covers 11 UML element types. The GUI application (egui/eframe) renders partitioned class boxes, Component/Node/Artifact deployment shapes, and boundary-anchored UML relationship notation; uses a project-first XMI workflow; creates and switches among Class, Use Case, Component, and Deployment diagrams; filters authoring tools by diagram kind; provides a clickable/reusable model browser and bounded, scrollable relationship-aware property editor; authors classifier attributes, operations, and parameters through reversible drafts; supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan; writer-assigned XMI IDs are document-wide collision-safe; direct association edges preserve empty waypoint geometry across save/reload; and selected nodes support cumulative native mouse drag with live attached-edge previews, one command on release, and no history for no-motion clicks. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and semantic targets for projects, diagrams, browser elements, nodes, edges, properties, classifier features, and history.
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -135,7 +135,7 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 464 tests, all passing** (verified 2026-07-30).
+**Total: 469 tests, all passing** (verified 2026-07-30).
 
 ### By Crate
 
@@ -146,7 +146,7 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 | `uml-core` serde_roundtrip | 9 | External serde round-trip tests, including Actor, UseCase, Component, Node, and all Artifact draw modes |
 | `uml-core` diagram_geometry | 2 | `diagram/geometry.rs` — Point, Size, Rect construction and arithmetic |
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
-| `uml-io` XMI unit tests | 90 | Reader/writer parsing, common metadata compatibility, parameter default values, collision-safe generated/preserved IDs, canonical relationship/widget identity including old Rust fallback, one-Class diagram save/reload, nested package containment round-trip, canonical single-definition emission, semantic round trips including diagram zoom and Component/Node/Artifact widgets, diagrams, relationships, and file helpers |
+| `uml-io` XMI unit tests | 95 | Reader/writer parsing, common metadata compatibility, parameter default values, collision-safe generated/preserved IDs, transparent document Model handling, semantic root-Package preservation, direct-edge empty-waypoint and explicit legacy-origin linepoint round trips, canonical relationship/widget identity including old Rust fallback, one-Class diagram save/reload, nested package containment round-trip, canonical single-definition emission, semantic round trips including diagram zoom and Component/Node/Artifact widgets, diagrams, relationships, and file helpers |
 | `uml-io` real corpus | 1 | Parse the available C++ XMI corpus without failure |
 | `apps/umbrello` tests | 161 | GUI behavior including project-first and multi-diagram flows, diagram/tool compatibility, clickable/reusable browser elements, selectable/editable relationships, persistent classifier feature drafts and MCP target dispatch, bounded full-layout Properties behavior and click ownership, canvas-only deselection, boundary-clipped edge geometry, live attached-edge drag previews, frame-level native pointer drag, viewport navigation, MCP schemas/CLI integration, and synchronized PNG output |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
@@ -409,6 +409,16 @@ cargo test -p uml-core serde_roundtrip_model_element
 
 **Current limitations:** Already-corrupted external XMI files containing duplicate semantic defining IDs remain rejected; the writer prevents new output from creating them. Classifier feature authoring does not yet cover templates, enum literals, feature reordering, subordinate stable IDs, or a model-type picker. Edited type text is stored as a primitive/external type. Dynamic node resizing and pixel-golden rendering tests remain deferred.
 
+### Direct-Edge XMI Round-Trip Fixes
+
+- **469 tests** verified across the workspace
+- A direct `ViewEdge` with no waypoints is serialized without a synthetic `<linepath>`, so save/reload preserves `waypoints == []` and the renderer no longer routes the association through canvas origin `(0,0)`
+- Explicit legacy linepoints, including a genuine `(0,0)` startpoint, remain real waypoints on read
+- The outer document `<UML:Model>` is a transparent persistence container rather than a user-visible semantic `Package`
+- The writer always allocates that wrapper a collision-safe synthetic ID and emits every semantic root Package as a nested `<UML:Package>`, preserving `original_xmi_id`, children, and `parent_index`
+- Multiply-parented structural elements are emitted once by the first package parent in deterministic repository insertion order
+- Main implementation locations: `crates/uml-io/src/xmi/{reader,writer}.rs`; design and regression rationale: `docs/designs/xmi_direct_edge_round_trip.md`
+
 ---
 
 ## Architecture Decisions
@@ -433,6 +443,8 @@ cargo test -p uml-core serde_roundtrip_model_element
 | **Central diagram/tool compatibility** | One pure matrix drives native, keyboard, helper, and MCP authoring gates; restrictions apply prospectively and never delete loaded legacy content |
 | **Semantic node/edge/browser selection** | `selected_element_id` identifies any `ModelElement`, including relationships; diagram views and browser rows select the same semantic object and property draft |
 | **Collision-aware XMI allocation** | Unique preserved originals are reserved before generation; wrapper/features/diagram synthetic IDs use the same allocator; reader duplicate rejection remains strict; deterministic canonical containment prevents duplicate definitions for multi-parent repository elements |
+| **Transparent XMI document Model** | The outer `UML:Model` is persistence structure, not a semantic Package; it always has a synthetic collision-safe ID, while all user Packages are explicit nested definitions and multi-parent emission uses deterministic first-parent ownership |
+| **Empty waypoints mean direct edge** | XMI omits `linepath` for `ViewEdge.waypoints == []`; explicit legacy linepoints remain preserved, including origin coordinates |
 
 ---
 
