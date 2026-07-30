@@ -1216,11 +1216,15 @@ impl XmiReader {
             _ => ParameterDirection::In,
         };
 
+        // Read canonical `value` attribute first, then legacy `initialValue`.
+        let default_value =
+            Self::attr_value(e, "value").or_else(|| Self::attr_value(e, "initialValue"));
+
         let param = Parameter {
             name,
             type_ref: TypeReference::unspecified(),
             direction,
-            default_value: None,
+            default_value,
         };
 
         match kind.as_str() {
@@ -2934,6 +2938,135 @@ mod tests {
         assert!(matches!(common("StaticFalse"), ModelElement::Node(node) if !node.base.is_static));
         assert!(
             matches!(common("OwnerPrecedence"), ModelElement::Artifact(artifact) if artifact.base.is_static)
+        );
+    }
+
+    #[test]
+    fn parameter_default_value_via_value_attribute() {
+        let xmi = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="Service">
+     <UML:Classifier.feature>
+      <UML:Operation xmi.id="O1" name="connect" visibility="public">
+       <UML:BehavioralFeature.parameter>
+        <UML:Parameter xmi.id="P1" name="host" kind="in" value="seed"/>
+        <UML:Parameter xmi.id="P2" name="port" kind="in"/>
+       </UML:BehavioralFeature.parameter>
+      </UML:Operation>
+     </UML:Classifier.feature>
+    </UML:Class>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+</XMI>"#;
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xmi.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+        let errors = model.validate_references();
+        assert!(errors.is_empty(), "dangling refs: {:?}", errors);
+
+        let (_, elem) = model
+            .iter()
+            .find(|(_, e)| e.classifier_data().is_some())
+            .expect("classifier element must exist");
+        let cd = elem.classifier_data().unwrap();
+        assert_eq!(cd.operations.len(), 1);
+        assert_eq!(cd.operations[0].parameters.len(), 2);
+        assert_eq!(
+            cd.operations[0].parameters[0].default_value,
+            Some("seed".to_string()),
+            "canonical 'value' attribute must be read"
+        );
+        assert_eq!(
+            cd.operations[0].parameters[1].default_value, None,
+            "absent default must remain None"
+        );
+    }
+
+    #[test]
+    fn parameter_default_value_via_initial_value_fallback() {
+        let xmi = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="Service">
+     <UML:Classifier.feature>
+      <UML:Operation xmi.id="O1" name="connect" visibility="public">
+       <UML:BehavioralFeature.parameter>
+        <UML:Parameter xmi.id="P1" name="host" kind="in" initialValue="legacy"/>
+       </UML:BehavioralFeature.parameter>
+      </UML:Operation>
+     </UML:Classifier.feature>
+    </UML:Class>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+</XMI>"#;
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xmi.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+        let errors = model.validate_references();
+        assert!(errors.is_empty(), "dangling refs: {:?}", errors);
+
+        let (_, elem) = model
+            .iter()
+            .find(|(_, e)| e.classifier_data().is_some())
+            .expect("classifier element must exist");
+        let cd = elem.classifier_data().unwrap();
+        assert_eq!(cd.operations[0].parameters.len(), 1);
+        assert_eq!(
+            cd.operations[0].parameters[0].default_value,
+            Some("legacy".to_string()),
+            "legacy 'initialValue' fallback must be read"
+        );
+    }
+
+    #[test]
+    fn parameter_default_value_canonical_takes_precedence() {
+        // When both 'value' and 'initialValue' are present, 'value' wins.
+        let xmi = r#"<?xml version="1.0" encoding="UTF-8"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="Service">
+     <UML:Classifier.feature>
+      <UML:Operation xmi.id="O1" name="connect" visibility="public">
+       <UML:BehavioralFeature.parameter>
+        <UML:Parameter xmi.id="P1" name="host" kind="in" value="canon" initialValue="legacy"/>
+       </UML:BehavioralFeature.parameter>
+      </UML:Operation>
+     </UML:Classifier.feature>
+    </UML:Class>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+</XMI>"#;
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xmi.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+        let errors = model.validate_references();
+        assert!(errors.is_empty(), "dangling refs: {:?}", errors);
+
+        let (_, elem) = model
+            .iter()
+            .find(|(_, e)| e.classifier_data().is_some())
+            .expect("classifier element must exist");
+        let cd = elem.classifier_data().unwrap();
+        assert_eq!(
+            cd.operations[0].parameters[0].default_value,
+            Some("canon".to_string()),
+            "'value' must take precedence over 'initialValue'"
         );
     }
 }

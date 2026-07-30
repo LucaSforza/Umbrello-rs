@@ -709,6 +709,11 @@ impl<W: Write> XmiWriter<W> {
                 if let Some(ref type_val) = self.attr_type_value(&param.type_ref) {
                     param_tag.push_attribute(("type", type_val.as_str()));
                 }
+                if let Some(ref default_val) = param.default_value {
+                    if !default_val.is_empty() {
+                        param_tag.push_attribute(("value", default_val.as_str()));
+                    }
+                }
                 self.writer.write_event(Event::Empty(param_tag))?;
             }
 
@@ -2049,6 +2054,73 @@ mod tests {
         reader.resolve(&mut restored).unwrap();
 
         assert!(restored.iter().any(|(_, e)| e.name() == "C"), "C must survive round-trip");
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
+
+    #[test]
+    fn parameter_default_value_write_and_round_trip() {
+        let mut model = UmlModel::new();
+        let mut cls = Class::new("Service");
+        cls.classifier.operations.push(Operation {
+            name: "connect".into(),
+            return_type: TypeReference::primitive("bool"),
+            parameters: vec![
+                Parameter {
+                    name: "host".into(),
+                    type_ref: TypeReference::primitive("String"),
+                    direction: ParameterDirection::In,
+                    default_value: Some("seed".into()),
+                },
+                Parameter {
+                    name: "port".into(),
+                    type_ref: TypeReference::primitive("int"),
+                    direction: ParameterDirection::In,
+                    default_value: None,
+                },
+            ],
+            visibility: Visibility::Public,
+            is_static: false,
+            is_abstract: false,
+            is_virtual: false,
+        });
+        model.insert(ModelElement::Class(cls));
+
+        // ── Writer test: verify output contains value="seed" ──────────
+        let xml = write_to_string(&model);
+        assert!(
+            xml.contains(r#"value="seed""#),
+            "Writer must emit value='seed' for parameter default"
+        );
+        assert!(
+            !xml.contains(r#"value=""#) || xml.matches(r#"value=""#).count() <= 1,
+            "None default_value should not emit a value attribute"
+        );
+
+        // ── Round-trip test: write → read → verify ───────────────────
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        let restored_cls = restored
+            .iter()
+            .find(|(_, e)| e.classifier_data().is_some())
+            .map(|(_, e)| e)
+            .expect("class must survive round-trip");
+        let cd = restored_cls.classifier_data().unwrap();
+        assert_eq!(cd.operations.len(), 1);
+        let op = &cd.operations[0];
+        assert_eq!(op.parameters.len(), 2);
+        assert_eq!(
+            op.parameters[0].default_value,
+            Some("seed".to_string()),
+            "default_value='seed' must survive round-trip"
+        );
+        assert_eq!(
+            op.parameters[1].default_value, None,
+            "None default_value must remain None after round-trip"
+        );
         let errors = restored.validate_references();
         assert!(errors.is_empty(), "dangling references: {:?}", errors);
     }
