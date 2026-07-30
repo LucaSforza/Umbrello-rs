@@ -318,64 +318,62 @@ impl XmiReader {
                         "Model" | "Package" => {
                             if let Some(elem) = self.parse_package(e)? {
                                 let id = elem.base().id;
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                                 self.push_parent(id);
                             }
                         },
                         "Class" => {
                             if let Some(elem) = self.parse_class(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
-                                // Note: classifiers are not pushed onto parent_stack
-                                // for package containment — that's tracked separately.
                             }
                         },
                         "Interface" => {
                             if let Some(elem) = self.parse_interface(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Enumeration" | "Enum" => {
                             if let Some(elem) = self.parse_enum(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "DataType" => {
                             if let Some(elem) = self.parse_datatype(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Actor" => {
                             if let Some(elem) = self.parse_actor(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "UseCase" => {
                             if let Some(elem) = self.parse_usecase(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Component" => {
                             if let Some(elem) = self.parse_component(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Node" => {
                             if let Some(elem) = self.parse_node(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Artifact" => {
                             if let Some(elem) = self.parse_artifact(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
@@ -470,62 +468,62 @@ impl XmiReader {
                     match local_name {
                         "Model" | "Package" => {
                             if let Some(elem) = self.parse_package(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                                 // Self-closing Model/Package — no children expected
                             }
                         },
                         "Class" => {
                             if let Some(elem) = self.parse_class(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Interface" => {
                             if let Some(elem) = self.parse_interface(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Enumeration" | "Enum" => {
                             if let Some(elem) = self.parse_enum(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "DataType" => {
                             if let Some(elem) = self.parse_datatype(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Actor" => {
                             if let Some(elem) = self.parse_actor(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "UseCase" => {
                             if let Some(elem) = self.parse_usecase(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Component" => {
                             if let Some(elem) = self.parse_component(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Node" => {
                             if let Some(elem) = self.parse_node(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
                         "Artifact" => {
                             if let Some(elem) = self.parse_artifact(e)? {
-                                model.insert(elem);
+                                self.insert_with_containment(model, elem);
                                 count += 1;
                             }
                         },
@@ -1433,6 +1431,19 @@ impl XmiReader {
     }
 
     // ─── Element skipping ──────────────────────────────────────────────
+
+    /// Insert a model element and, if there is an open container on the
+    /// parent stack, register it as a child of that container via
+    /// `add_to_package`.  Feature sub-elements (Attribute, Operation,
+    /// Parameter) must NOT be registered as package children — only
+    /// top-level `ModelElement` instances are passed here.
+    fn insert_with_containment(&mut self, model: &mut UmlModel, elem: ModelElement) {
+        let id = elem.base().id;
+        model.insert(elem);
+        if let Some(&parent_id) = self.parent_stack.last() {
+            let _ = model.add_to_package(parent_id, id);
+        }
+    }
 
     /// Skip an element and all its children by tracking nesting depth.
     fn skip_element_depth<R: BufRead>(

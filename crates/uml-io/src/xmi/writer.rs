@@ -276,7 +276,7 @@ impl<W: Write> XmiWriter<W> {
             // Write structural elements
             for id in &struct_ids {
                 if let Some(elem) = model.get(*id) {
-                    self.write_element(elem, model)?;
+                    self.write_element(elem, model, root)?;
                 }
             }
 
@@ -315,6 +315,36 @@ impl<W: Write> XmiWriter<W> {
         None
     }
 
+    /// Is `package_id` the deterministic canonical owner of `child_id`?
+    ///
+    /// An element with multiple package parents must be emitted by exactly
+    /// one parent to avoid duplicate defining xmi.id values.  This function
+    /// implements the canonical-choice rule:
+    ///
+    /// 1. If `child_id` has no package parent → unparented (wrapper-level;
+    ///    not owned by any package).
+    /// 2. If `root` is among the parents → root is canonical.
+    /// 3. Otherwise the first parent in repository insertion order is
+    ///    canonical.
+    fn is_canonical_owner(
+        model: &UmlModel,
+        root: Option<UmlId>,
+        package_id: UmlId,
+        child_id: UmlId,
+    ) -> bool {
+        let parents = model.parents_of(child_id).unwrap_or(&[]);
+        if parents.is_empty() {
+            return false; // unparented — written at wrapper level
+        }
+        if let Some(root_id) = root {
+            if parents.contains(&root_id) {
+                return package_id == root_id; // root wins when present
+            }
+        }
+        // No root parent — the first parent in deterministic order wins
+        parents[0] == package_id
+    }
+
     // ─── Element dispatch ──────────────────────────────────────────────
 
     /// Write a single model element.
@@ -322,9 +352,10 @@ impl<W: Write> XmiWriter<W> {
         &mut self,
         elem: &ModelElement,
         model: &UmlModel,
+        root: Option<UmlId>,
     ) -> Result<(), XmiWriteError> {
         match elem {
-            ModelElement::Package(pkg) => self.write_package(pkg, model),
+            ModelElement::Package(pkg) => self.write_package(pkg, model, root),
             ModelElement::Class(cls) => self.write_class(elem, &cls.base, &cls.classifier, model),
             ModelElement::Interface(iface) => {
                 self.write_class(elem, &iface.base, &iface.classifier, model)
@@ -418,11 +449,16 @@ impl<W: Write> XmiWriter<W> {
 
     // ─── Package ───────────────────────────────────────────────────────
 
-    /// Write a `<UML:Package>` element.
+    /// Write a `<UML:Package>` element.  Only children for which this
+    /// package is the deterministic canonical owner are emitted recursively;
+    /// children whose canonical owner is a different package (e.g. the root
+    /// model package) are silently skipped to guarantee exactly one defining
+    /// xmi.id per element.
     fn write_package(
         &mut self,
         pkg: &uml_core::Package,
         model: &UmlModel,
+        root: Option<UmlId>,
     ) -> Result<(), XmiWriteError> {
         let xmi_id = self.lookup_xmi_id(pkg.base.id);
         let mut tag = BytesStart::new("UML:Package");
@@ -449,14 +485,20 @@ impl<W: Write> XmiWriter<W> {
 
         self.writer.write_event(Event::Start(tag))?;
 
-        // Write children recursively (using the public API)
+        // Write children recursively — but only those for which this
+        // package is the deterministic canonical owner.
         let child_ids: Vec<UmlId> = pkg.child_ids().collect();
         if !child_ids.is_empty() {
             self.writer
                 .write_event(Event::Start(BytesStart::new("UML:Namespace.ownedElement")))?;
             for child_id in child_ids {
+                // Skip children whose canonical owner is not this package
+                // (e.g. they belong to the root package or another sibling).
+                if !Self::is_canonical_owner(model, root, pkg.base.id, child_id) {
+                    continue;
+                }
                 if let Some(child) = model.get(child_id) {
-                    self.write_element(child, model)?;
+                    self.write_element(child, model, root)?;
                 }
             }
             self.writer
@@ -1789,8 +1831,225 @@ mod tests {
             .count();
         assert!(pkg_count >= 2, "should have at least 2 packages after round-trip");
 
+        // Package membership: P must contain C (reader now preserves
+        // containment via parent_stack).
+        let p_in_restored = restored
+            .iter()
+            .find(|(_, e)| e.name() == "P")
+            .map(|(id, _)| id)
+            .expect("Package P must exist");
+        let pkg = match restored.get(p_in_restored).unwrap() {
+            ModelElement::Package(pkg) => pkg,
+            other => panic!("expected Package at P, got {other:?}"),
+        };
+        let child_names: Vec<&str> = pkg
+            .child_ids()
+            .filter_map(|cid| restored.get(cid))
+            .map(|e| e.name())
+            .collect();
+        assert!(
+            child_names.contains(&"C"),
+            "P must contain C after round-trip; children: {child_names:?}"
+        );
+
+        // parents_of(C) must include P.
+        let c_in_restored = restored
+            .iter()
+            .find(|(_, e)| e.name() == "C")
+            .map(|(id, _)| id)
+            .expect("Class C must exist");
+        let c_parents = restored.parents_of(c_in_restored).unwrap_or(&[]);
+        assert!(
+            c_parents.contains(&p_in_restored),
+            "C's parents must include P; parents: {c_parents:?}"
+        );
+
         // No dangling references.
         let errors = restored.validate_references();
         assert!(errors.is_empty(), "dangling references after round-trip: {:?}", errors);
+    }
+
+    /// Multiple levels of package nesting: UML:Model → P1 → P2 → C.
+    #[test]
+    fn package_containment_multi_nested() {
+        let mut model = UmlModel::new();
+        let root_pkg = Package::new("UML Model");
+        let root_id = root_pkg.base.id;
+        model.insert(ModelElement::Package(root_pkg));
+
+        let p1 = Package::new("P1");
+        let p1_id = p1.base.id;
+        model.insert(ModelElement::Package(p1));
+        model.add_to_package(root_id, p1_id).unwrap();
+
+        let p2 = Package::new("P2");
+        let p2_id = p2.base.id;
+        model.insert(ModelElement::Package(p2));
+        model.add_to_package(p1_id, p2_id).unwrap();
+
+        let cls = Class::new("C");
+        let cls_id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+        model.add_to_package(p2_id, cls_id).unwrap();
+
+        let xml = write_to_string(&model);
+        assert_eq!(
+            xml.matches("name=\"C\"").count(),
+            1,
+            "C must appear exactly once (nested 3 levels deep)"
+        );
+
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        // P2 must contain C.
+        let p2_in_restored = restored
+            .iter()
+            .find(|(_, e)| e.name() == "P2")
+            .map(|(id, _)| id)
+            .expect("Package P2 must exist");
+        let p2_pkg = match restored.get(p2_in_restored).unwrap() {
+            ModelElement::Package(pkg) => pkg,
+            other => panic!("expected Package, got {other:?}"),
+        };
+        assert!(
+            p2_pkg
+                .child_ids()
+                .any(|id| restored.get(id).is_some_and(|e| e.name() == "C")),
+            "P2 must contain C"
+        );
+
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
+
+    /// An element with multiple parents (root + non-root Package) must be
+    /// emitted exactly once: the root (UML:Model wrapper) wins as canonical
+    /// owner.  The non-root Package's `write_package` must skip the child.
+    #[test]
+    fn package_containment_multiple_parents_root_wins() {
+        let mut model = UmlModel::new();
+        let root_pkg = Package::new("UML Model");
+        let root_id = root_pkg.base.id;
+        model.insert(ModelElement::Package(root_pkg));
+
+        let pkg = Package::new("P");
+        let pkg_id = pkg.base.id;
+        model.insert(ModelElement::Package(pkg));
+        model.add_to_package(root_id, pkg_id).unwrap();
+
+        // C belongs to BOTH root and P.
+        let cls = Class::new("C");
+        let cls_id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+        model.add_to_package(root_id, cls_id).unwrap();
+        model.add_to_package(pkg_id, cls_id).unwrap();
+
+        let xml = write_to_string(&model);
+
+        // C must appear exactly once (wrapper level, not also inside P).
+        assert_eq!(
+            xml.matches("name=\"C\"").count(),
+            1,
+            "C must appear exactly once (root wins as canonical owner)"
+        );
+
+        // Round-trip must succeed (no DuplicateId).
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        assert!(restored.iter().any(|(_, e)| e.name() == "C"), "C must survive round-trip");
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
+
+    /// An element with two non-root parents: the first parent in
+    /// repository insertion order is deterministic canonical owner.
+    #[test]
+    fn package_containment_multiple_parents_deterministic_first() {
+        let mut model = UmlModel::new();
+        let root_pkg = Package::new("UML Model");
+        let root_id = root_pkg.base.id;
+        model.insert(ModelElement::Package(root_pkg));
+
+        // Insert P1 first, then P2.
+        let p1 = Package::new("P1");
+        let p1_id = p1.base.id;
+        model.insert(ModelElement::Package(p1));
+        model.add_to_package(root_id, p1_id).unwrap();
+
+        let p2 = Package::new("P2");
+        let p2_id = p2.base.id;
+        model.insert(ModelElement::Package(p2));
+        model.add_to_package(root_id, p2_id).unwrap();
+
+        // C belongs to both P1 and P2 (no root parent for C).
+        let cls = Class::new("C");
+        let cls_id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+        model.add_to_package(p1_id, cls_id).unwrap();
+        model.add_to_package(p2_id, cls_id).unwrap();
+
+        let xml = write_to_string(&model);
+
+        // C must appear exactly once (emitted by P1, which is first parent).
+        assert_eq!(
+            xml.matches("name=\"C\"").count(),
+            1,
+            "C must appear exactly once (P1 is first parent, deterministic)"
+        );
+
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        assert!(restored.iter().any(|(_, e)| e.name() == "C"), "C must survive round-trip");
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
+
+    /// Insertion-order independence: reversing the order of element
+    /// insertion must not affect round-trip validity.
+    #[test]
+    fn package_containment_insertion_order_independence() {
+        let mut model = UmlModel::new();
+        let root_pkg = Package::new("UML Model");
+        let root_id = root_pkg.base.id;
+        model.insert(ModelElement::Package(root_pkg));
+
+        // Insert in different order: class first, then package.
+        let cls = Class::new("C");
+        let cls_id = cls.base.id;
+        model.insert(ModelElement::Class(cls));
+
+        let pkg_p = Package::new("P");
+        let pkg_p_id = pkg_p.base.id;
+        model.insert(ModelElement::Package(pkg_p));
+
+        // Now establish containment.
+        model.add_to_package(root_id, pkg_p_id).unwrap();
+        model.add_to_package(pkg_p_id, cls_id).unwrap();
+
+        let xml = write_to_string(&model);
+
+        assert_eq!(
+            xml.matches("name=\"C\"").count(),
+            1,
+            "C must appear exactly once regardless of insertion order"
+        );
+
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        assert!(restored.iter().any(|(_, e)| e.name() == "C"), "C must survive round-trip");
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
     }
 }
