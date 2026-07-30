@@ -26,7 +26,7 @@
 
 Umbrello-RS is a ground-up Rust rewrite of the [Umbrello](https://apps.kde.org/umbrello/) UML modeller, a KDE application that has been developed continuously since 2001. The rewrite preserves the UML 1.2 XMI interchange format for compatibility with the original, while building a modern architecture in Rust.
 
-**Current state:** 396 tests passing across 5 crates. The core domain model covers 11 UML element types. The GUI application (egui/eframe) renders partitioned class boxes, Component/Node/Artifact deployment shapes, and selectable semantic edges; uses a project-first XMI workflow; creates and switches among Class, Use Case, Component, and Deployment diagrams; filters authoring tools by diagram kind; provides a clickable/reusable model browser and relationship-aware property editor; supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan; writer-assigned XMI IDs are document-wide collision-safe; selected nodes support cumulative native mouse drag with one command on release and no-motion clicks add no history. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and semantic targets for projects, diagrams, browser elements, nodes, edges, properties, and history.
+**Current state:** 440 tests passing across 5 crates. The core domain model covers 11 UML element types. The GUI application (egui/eframe) renders partitioned class boxes, Component/Node/Artifact deployment shapes, and boundary-anchored UML relationship notation; uses a project-first XMI workflow; creates and switches among Class, Use Case, Component, and Deployment diagrams; filters authoring tools by diagram kind; provides a clickable/reusable model browser and relationship-aware property editor; authors classifier attributes, operations, and parameters through reversible drafts; supports 10–500% zoom, cursor-anchored wheel zoom, fit/reset controls, and middle-button pan; writer-assigned XMI IDs are document-wide collision-safe; selected nodes support cumulative native mouse drag with live attached-edge previews, one command on release, and no history for no-motion clicks. An opt-in Rust/rmcp stdio server supports semantic GUI automation and visual QA through seven generic tools, including synchronized native viewport screenshots and semantic targets for projects, diagrams, browser elements, nodes, edges, properties, classifier features, and history.
 
 **Repo:** <https://invent.kde.org/sdk/umbrello> | **C++ original:** 2500+ files | **Rust rewrite:** ~45 source files
 
@@ -135,20 +135,20 @@ No circular dependencies. `uml-core` is the foundational crate with zero depende
 
 ## Test Coverage
 
-**Total: 396 tests, all passing** (verified 2026-07-30).
+**Total: 440 tests, all passing** (verified 2026-07-30).
 
 ### By Crate
 
 | Test Suite | Count | What It Covers |
 |------------|-------|-----------------|
-| `uml-core` unit tests | 175 | Elements including Component/Node/Artifact, repository invariants, types, diagrams including bounded/default zoom, undo commands, reversible diagram creation, atomic relationship updates, and failed-history retention |
+| `uml-core` unit tests | 188 | Elements including Component/Node/Artifact, repository invariants, types, diagrams including bounded/default zoom, undo commands, reversible diagram creation, atomic relationship and classifier-feature updates, and failed-history retention |
 | `uml-core` id_tests | 8 | `id.rs` — UmlId generation, equality, ordering, Display, serde, UUIDv4 properties |
 | `uml-core` serde_roundtrip | 9 | External serde round-trip tests, including Actor, UseCase, Component, Node, and all Artifact draw modes |
 | `uml-core` diagram_geometry | 2 | `diagram/geometry.rs` — Point, Size, Rect construction and arithmetic |
 | `uml-core` history | 4 | `undo/mod.rs` — History stack, execute/undo/redo, max_depth, disabled mode |
 | `uml-io` XMI unit tests | 73 | Reader/writer parsing, common metadata compatibility, collision-safe generated/preserved IDs, one-Class diagram save/reload, nested package containment round-trip, canonical single-definition emission, semantic round trips including diagram zoom and Component/Node/Artifact widgets, diagrams, relationships, and file helpers |
 | `uml-io` real corpus | 1 | Parse the available C++ XMI corpus without failure |
-| `apps/umbrello` tests | 123 | GUI behavior including project-first and multi-diagram flows, diagram/tool compatibility, clickable/reusable browser elements, selectable/editable relationships, frame-level native pointer drag, multi-frame cumulative movement, no-op click, MCP gesture mode, viewport navigation, semantic QA targets, MCP schemas/CLI integration, and synchronized PNG output |
+| `apps/umbrello` tests | 154 | GUI behavior including project-first and multi-diagram flows, diagram/tool compatibility, clickable/reusable browser elements, selectable/editable relationships, persistent classifier feature drafts and MCP targets, canvas-only deselection, boundary-clipped edge geometry, live attached-edge drag previews, frame-level native pointer drag, viewport navigation, MCP schemas/CLI integration, and synchronized PNG output |
 | Doctests | 1 | `crates/uml-io/src/xmi/writer.rs` — XmiWriter usage example |
 
 ### Test Commands
@@ -172,7 +172,7 @@ cargo test -p uml-core serde_roundtrip_model_element
 - **Pure functions** are preferred — they are trivially testable.
 - **Floating-point equality** tests use `assert!((a - b).abs() < EPSILON)` pattern, with `#[allow(clippy::float_cmp)]` where exact comparison is intended.
 - **Serde round-trip tests** verify JSON serialization/deserialization for every domain type.
-- **Visual rendering** is tested manually (12 visual test cases defined in the M15 spec) — automated screenshot testing is deferred.
+- **Visual rendering** has geometry/dispatch tests and synchronized native MCP screenshots; pixel-golden regression tests remain deferred.
 - **XMI corpus tests** load real Umbrello files and verify structural completeness.
 
 ---
@@ -392,7 +392,19 @@ cargo test -p uml-core serde_roundtrip_model_element
 - Project-local `.opencode/skills/umbrello-mcp-qa/` provides versioned standard-library Python MCP client/smoke scripts for read-only gesture QA and create/save/relaunch persistence QA; the reviewer prompt requires this skill instead of disposable scripts
 - Main implementation locations: `crates/uml-io/src/xmi/writer.rs`, `apps/umbrello/src/{app,canvas,tests}.rs`, and `apps/umbrello/src/qa/{control,protocol,mcp}.rs`
 
-**Current limitation:** Already-corrupted external XMI files containing duplicate semantic defining IDs remain rejected; the fix prevents new writer output from creating them. Attribute/operation authoring remains absent: existing attributes/operations load, render, and show read-only, but creation/editing commands and UI are deferred.
+### Property Authoring and Edge Interaction Fixes
+
+- **440 tests** verified across the workspace
+- Canvas background deselection is spatially constrained to the canvas, so interactions in Properties, menus, tree, and tool palette preserve semantic selection without reintroducing overlapping pointer ownership
+- `UpdateClassifierFeatures` atomically replaces classifier attributes and operations through history while preserving templates and rejecting stale snapshots
+- Persistent classifier drafts support Add/Edit/Delete and Apply/Revert for attributes, operations, and operation parameters, including type text, visibility, direction, optional values, and static/abstract/virtual flags
+- Existing model-backed `TypeReference` values remain ID-based until their displayed type text is changed; edited text becomes a primitive/external reference
+- The existing seven generic MCP tools expose index-based classifier feature targets; callers rediscover targets after draft list mutations
+- Shared edge paths clip to source and target rectangle boundaries, skip invalid semantic references, drive hit testing/highlighting, and place all six supported UML relationship notations outside opaque node fills
+- Drag-preview endpoint substitution keeps attached edges synchronized with a moving source or target without mutating the model until the single release command
+- Main implementation locations: `crates/uml-core/src/undo/{commands,mod}.rs` and `apps/umbrello/src/{app,canvas,property_editor,tests}.rs`, plus `apps/umbrello/src/qa/control.rs`
+
+**Current limitations:** Already-corrupted external XMI files containing duplicate semantic defining IDs remain rejected; the writer prevents new output from creating them. Classifier feature authoring does not yet cover templates, enum literals, feature reordering, subordinate stable IDs, or a model-type picker. Edited type text is stored as a primitive/external type. Dynamic node resizing and pixel-golden rendering tests remain deferred.
 
 ---
 
