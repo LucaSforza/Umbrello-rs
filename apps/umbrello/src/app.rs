@@ -875,15 +875,21 @@ impl eframe::App for UmbrelloApp {
                         self.render_tree(ui);
                     });
             });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.render_canvas(ui);
-        });
         egui::SidePanel::right("property_panel")
             .resizable(true)
             .default_width(280.0)
             .show(ctx, |ui| {
                 self.render_property_editor(ui);
             });
+        // CentralPanel must be last so its max_rect is the actual
+        // canvas area (excluding both side panels).  If CentralPanel
+        // renders before the right SidePanel, its max_rect includes
+        // the future property panel space, causing canvas_rect to
+        // span the full window width and breaking the canvas-only
+        // background deselection guard.
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.render_canvas(ui);
+        });
         if self.drag_node_id.is_some() {
             ctx.request_repaint();
         }

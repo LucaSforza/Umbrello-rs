@@ -4410,3 +4410,129 @@ fn zero_size_node_bounds_produce_finite_paths() {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// S2F3 — Native property panel click preserves selection regression
+// ═══════════════════════════════════════════════════════════════════════
+
+/// S2F3-01: A click inside the right property panel must preserve
+/// semantic selection.  A click in the actual canvas must deselect.
+///
+/// This regression guards against two failure modes:
+/// 1. CentralPanel renders before the right SidePanel, causing
+///    canvas_rect to span the full window width and making the
+///    canvas-only deselection guard treat a property-panel click
+///    as a canvas background click.
+/// 2. The panel ordering fix breaks native node drag ownership.
+#[test]
+fn native_property_panel_click_preserves_selection() {
+    let mut app = make_app_with_diagram();
+    let element = Class::new("Target");
+    let id = element.base.id;
+    app.model.insert(ModelElement::Class(element));
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(id, ViewNode::new(id, Rect::new(100.0, 100.0, 100.0, 60.0)));
+    app.active_diagram = Some(0);
+    app.select_element(id).unwrap();
+    // Ensure classifier_draft is populated for the selected classifier.
+    app.refresh_property_buffers();
+
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let screen_size = egui::vec2(1280.0, 1024.0);
+
+    // Frame 1: establish full-app layout including both side panels.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+
+    let canvas = app
+        .last_canvas_rect
+        .expect("canvas_rect must be set after frame");
+    // With CentralPanel last, canvas_rect should be strictly inside the
+    // window — not spanning its full width.
+    assert!(
+        canvas.right() < screen_size.x - 50.0,
+        "canvas_rect.right()={} should be < {} (right panel reserved width)",
+        canvas.right(),
+        screen_size.x - 50.0
+    );
+
+    // Click well to the right of the canvas (inside the property panel area).
+    let prop_panel_click = egui::pos2(canvas.right() + 50.0, canvas.center().y);
+    assert!(
+        !canvas.contains(prop_panel_click),
+        "Property panel click must be outside canvas_rect"
+    );
+
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: prop_panel_click,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: prop_panel_click,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    assert!(
+        app.selected_element_id.is_some(),
+        "Property panel click must NOT clear selection"
+    );
+    assert!(
+        app.classifier_draft.is_some(),
+        "classifier_draft must survive property panel click"
+    );
+
+    // Now click inside the canvas (not on any node) — must clear.
+    let canvas_click = egui::pos2(canvas.center().x, canvas.center().y);
+    assert!(canvas.contains(canvas_click), "Canvas center must be inside canvas_rect");
+
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: canvas_click,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: canvas_click,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+
+    assert!(
+        app.selected_element_id.is_none(),
+        "Canvas background click MUST clear selection"
+    );
+    assert!(
+        app.classifier_draft.is_none(),
+        "classifier_draft must be cleared after deselection"
+    );
+}
