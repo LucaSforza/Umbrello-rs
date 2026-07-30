@@ -370,8 +370,7 @@ impl UmbrelloApp {
                                 ui.label(format!("#{j}"));
                                 ui.label("N:");
                                 ui.add(
-                                    egui::TextEdit::singleline(&mut param.name)
-                                        .desired_width(80.0),
+                                    egui::TextEdit::singleline(&mut param.name).desired_width(80.0),
                                 );
                                 ui.label("T:");
                                 ui.add(

@@ -7,9 +7,7 @@
 // binary target sees this code as unused.
 #![allow(unused_imports)]
 
-use crate::app::{
-    ClassifierDraft, DraftAttribute, DraftOperation, DraftParameter, UmbrelloApp,
-};
+use crate::app::{ClassifierDraft, DraftAttribute, DraftOperation, DraftParameter, UmbrelloApp};
 use crate::rendering::{element_color, type_display, visibility_symbol};
 use crate::tool_palette::ToolMode;
 use eframe::App;
@@ -17,9 +15,9 @@ use image::GenericImageView;
 use std::path::PathBuf;
 use uml_core::{
     commands, Actor, Artifact, ArtifactDrawMode, AssociationType, Class, Command, Component,
-    Datatype, Diagram, DiagramKind, Enum, Interface, ModelElement, Node, Package, ParameterDirection,
-    Point, Rect, Relationship, Size, TypeReference, UmlId, UmlModel, UseCase, ViewEdge, ViewNode,
-    Visibility,
+    Datatype, Diagram, DiagramKind, Enum, Interface, ModelElement, Node, Package,
+    ParameterDirection, Point, Rect, Relationship, Size, TypeReference, UmlId, UmlModel, UseCase,
+    ViewEdge, ViewNode, Visibility,
 };
 
 #[test]
@@ -1636,7 +1634,9 @@ fn property_panel_layout_1024x768_keeps_canvas_300() {
     let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
         app.update(ctx, &mut frame);
     });
-    let canvas = app.last_canvas_rect.expect("canvas_rect must be set after frame");
+    let canvas = app
+        .last_canvas_rect
+        .expect("canvas_rect must be set after frame");
     assert!(
         canvas.width() >= 300.0,
         "canvas width {:.1} should be >= 300 at 1024x768",
@@ -1655,7 +1655,9 @@ fn property_panel_layout_1741x1306_keeps_canvas_600() {
     let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
         app.update(ctx, &mut frame);
     });
-    let canvas = app.last_canvas_rect.expect("canvas_rect must be set after frame");
+    let canvas = app
+        .last_canvas_rect
+        .expect("canvas_rect must be set after frame");
     assert!(
         canvas.width() >= 600.0,
         "canvas width {:.1} should be >= 600 at 1741x1306",
