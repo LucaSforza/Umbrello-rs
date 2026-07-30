@@ -953,32 +953,32 @@ impl<W: Write> XmiWriter<W> {
         ];
         self.write_tag_open("assocwidget", attrs)?;
 
-        // Write linepath
-        self.write_tag_open("linepath", &[])?;
+        // Write linepath only when waypoints exist.
+        // Empty waypoints denote a direct edge — omitting the linepath
+        // preserves the `[]` distinction across round-trip.
+        if !edge.waypoints.is_empty() {
+            self.write_tag_open("linepath", &[])?;
 
-        // Start point
-        if let Some(start) = edge.waypoints.first() {
-            let start_attrs: &[(&str, &str)] = &[
-                ("startx", &(start.x as i64).to_string()),
-                ("starty", &(start.y as i64).to_string()),
-            ];
-            self.write_empty_tag("startpoint", start_attrs)?;
-        } else {
-            self.write_empty_tag("startpoint", &[("startx", "0"), ("starty", "0")])?;
+            // Start point
+            if let Some(start) = edge.waypoints.first() {
+                let start_attrs: &[(&str, &str)] = &[
+                    ("startx", &(start.x as i64).to_string()),
+                    ("starty", &(start.y as i64).to_string()),
+                ];
+                self.write_empty_tag("startpoint", start_attrs)?;
+            }
+
+            // End point
+            if let Some(end) = edge.waypoints.last() {
+                let end_attrs: &[(&str, &str)] = &[
+                    ("endx", &(end.x as i64).to_string()),
+                    ("endy", &(end.y as i64).to_string()),
+                ];
+                self.write_empty_tag("endpoint", end_attrs)?;
+            }
+
+            self.write_tag_close("linepath")?;
         }
-
-        // End point
-        if let Some(end) = edge.waypoints.last() {
-            let end_attrs: &[(&str, &str)] = &[
-                ("endx", &(end.x as i64).to_string()),
-                ("endy", &(end.y as i64).to_string()),
-            ];
-            self.write_empty_tag("endpoint", end_attrs)?;
-        } else {
-            self.write_empty_tag("endpoint", &[("endx", "0"), ("endy", "0")])?;
-        }
-
-        self.write_tag_close("linepath")?;
         self.write_tag_close("assocwidget")?;
 
         Ok(())
@@ -1248,8 +1248,10 @@ mod tests {
         reader.resolve(&mut model2).unwrap();
 
         // Structural comparison: compare non-package element counts.
-        // The reader adds a <UML:Model> Package wrapper during parsing,
-        // so model2 will have 1 extra Package element.
+        // The outer <UML:Model> document container is transparent
+        // (not a semantic Package), so no extra Package is created
+        // on read.  The non-package count is the authoritative
+        // equivalence check for structural elements.
         let count_non_pkg = |m: &UmlModel| {
             m.iter()
                 .filter(|(_, e)| !matches!(e, ModelElement::Package(_)))
@@ -1823,20 +1825,21 @@ mod tests {
         reader.read_from(xml.as_bytes(), &mut restored).unwrap();
         reader.resolve(&mut restored).unwrap();
 
-        // All three semantic elements (UML:Model wrapper → Package,
-        // Package P, Class C) must survive.
+        // Semantic elements (Package P, Class C) must survive.
         assert!(
             restored.iter().any(|(_, e)| e.name() == "P"),
             "Package P must survive round-trip"
         );
         assert!(restored.iter().any(|(_, e)| e.name() == "C"), "Class C must survive round-trip");
 
-        // At least 2 packages: UML Model (wrapper) + P
+        // Exactly 1 Package: the inner Package P.  The outer
+        // UML:Model wrapper is transparent and no longer creates a
+        // synthetic semantic Package.
         let pkg_count = restored
             .iter()
             .filter(|(_, e)| matches!(e, ModelElement::Package(_)))
             .count();
-        assert!(pkg_count >= 2, "should have at least 2 packages after round-trip");
+        assert_eq!(pkg_count, 1, "exactly 1 Package (P) after round-trip, not {pkg_count}");
 
         // Package membership: P must contain C (reader now preserves
         // containment via parent_stack).
@@ -2357,17 +2360,10 @@ mod tests {
 
     // ─── Direct-edge round-trip regression (RED/S1) ────────────────────
 
-    /// Regression (RED): after saving and reloading a model with a direct
-    /// association edge (empty waypoints), the restored edge must have empty
-    /// waypoints and no synthetic Package must be created from the outer
-    /// `UML:Model` wrapper.
-    ///
-    /// Current production behavior causes two failures:
-    ///   1. The writer emits `<startpoint startx="0" starty="0"/>` even when
-    ///      waypoints are empty; the reader converts these into real waypoints.
-    ///   2. The reader parses every `UML:Model` tag as a `Package`, so the
-    ///      document-level `<UML:Model name="UML Model">` becomes a semantic
-    ///      `ModelElement::Package`.
+    /// After saving and reloading a model with a direct association edge
+    /// (empty waypoints), the restored edge must have empty waypoints and
+    /// no synthetic Package must be created from the outer `UML:Model`
+    /// wrapper.
     #[test]
     fn direct_edge_round_trip_preserves_empty_waypoints() {
         let mut model = UmlModel::new();
@@ -2413,8 +2409,8 @@ mod tests {
             .count();
         assert_eq!(
             pkg_count, 0,
-            "Expected 0 Package elements; reader currently creates one for \
-             the outer UML:Model wrapper",
+            "Expected 0 Package elements; the outer UML:Model wrapper \
+             must be transparent (no semantic Package)",
         );
 
         // ── Semantic element kinds preserved ────────────────────────────
@@ -2462,8 +2458,7 @@ mod tests {
         let (_edge_id, edge) = diag.edges.iter().next().unwrap();
         assert!(
             edge.waypoints.is_empty(),
-            "Expected empty waypoints for direct edge; writer currently emits \
-             (0,0) placeholders: {:?}",
+            "Expected empty waypoints for direct edge; got: {:?}",
             edge.waypoints,
         );
 

@@ -225,6 +225,13 @@ pub struct XmiReader {
     pending_relation_xmi_ids: HashMap<String, UmlId>,
     /// XMI ID of the current UML:Association element (set at Start, used at End).
     current_association_xmi_id: Option<String>,
+    /// Depth of the outer document-level `<UML:Model>` container.
+    ///
+    /// 0 = the outer document Model has not been entered yet (or has been
+    /// exited).  >0 = currently inside the transparent document wrapper.
+    /// Only the outermost `<UML:Model>` element is transparent; nested
+    /// `<UML:Model>` and `<UML:Package>` elements remain semantic Packages.
+    model_depth: usize,
 }
 
 impl XmiReader {
@@ -261,6 +268,7 @@ impl XmiReader {
             widget_diagram_occurrence: HashMap::new(),
             pending_relation_xmi_ids: HashMap::new(),
             current_association_xmi_id: None,
+            model_depth: 0,
         }
     }
 
@@ -331,7 +339,23 @@ impl XmiReader {
 
                     // Handle known elements
                     match local_name {
-                        "Model" | "Package" => {
+                        "Model" => {
+                            if self.model_depth == 0 {
+                                // Outer document Model — transparent container.
+                                // No element is created; children are unparented.
+                                self.model_depth += 1;
+                            } else {
+                                // Nested Model — semantic Package with containment.
+                                if let Some(elem) = self.parse_package(e)? {
+                                    let id = elem.base().id;
+                                    self.insert_with_containment(model, elem);
+                                    count += 1;
+                                    self.push_parent(id);
+                                }
+                                self.model_depth += 1;
+                            }
+                        },
+                        "Package" => {
                             if let Some(elem) = self.parse_package(e)? {
                                 let id = elem.base().id;
                                 self.insert_with_containment(model, elem);
@@ -488,11 +512,23 @@ impl XmiReader {
 
                     // Handle known elements (self-closing)
                     match local_name {
-                        "Model" | "Package" => {
+                        "Model" if self.model_depth == 0 => {
+                            // Self-closing outer document Model — transparent.
+                            // No element created (no children possible in a
+                            // self-closing tag).
+                        },
+                        "Model" => {
+                            // Self-closing nested Model — semantic Package.
                             if let Some(elem) = self.parse_package(e)? {
                                 self.insert_with_containment(model, elem);
                                 count += 1;
-                                // Self-closing Model/Package — no children expected
+                            }
+                            // No depth change for self-closing (no matching End event).
+                        },
+                        "Package" => {
+                            if let Some(elem) = self.parse_package(e)? {
+                                self.insert_with_containment(model, elem);
+                                count += 1;
                             }
                         },
                         "Class" => {
@@ -585,7 +621,23 @@ impl XmiReader {
                     let local_name = Self::local_name(tag);
 
                     match local_name {
-                        "Model" | "Package" => {
+                        "Model" => {
+                            if self.model_depth > 0 {
+                                self.model_depth -= 1;
+                            }
+                            if self.model_depth > 0 {
+                                // Nested Model closing — pop parent_stack.
+                                // (We pushed the nested Model's Package onto
+                                // parent_stack when we entered it.)
+                                if !self.parent_stack.is_empty() {
+                                    self.parent_stack.pop();
+                                }
+                            }
+                            // If model_depth == 0, the outer document Model
+                            // just closed.  We never pushed the outer Model
+                            // onto parent_stack, so no pop is needed.
+                        },
+                        "Package" => {
                             if !self.parent_stack.is_empty() {
                                 self.parent_stack.pop();
                             }
@@ -2549,9 +2601,10 @@ mod tests {
             .unwrap();
         reader.resolve(&mut model).unwrap();
 
-        // Model elements should be parsed
-        // count includes the UML:Model wrapper + Class + Interface = 3
-        assert_eq!(count, 3, "should parse 3 structural elements (Model + Class + Interface)");
+        // Model elements should be parsed.
+        // The outer <UML:Model> is transparent (no Package created),
+        // so count = Class + Interface = 2.
+        assert_eq!(count, 2, "should parse 2 structural elements (Class + Interface)");
         assert!(model.contains(
             model
                 .iter()
@@ -3672,13 +3725,9 @@ mod tests {
 
     // ─── Transparent document Model wrapper (RED/S1) ────────────────────
 
-    /// Regression (RED): the outer document-level `<UML:Model>` container
-    /// must be transparent — it must NOT create a semantic `Package` element
-    /// in the model.  Structural children of the outer wrapper are unparented.
-    ///
-    /// Current production behaviour maps every `UML:Model` through
-    /// `parse_package`, so the outer wrapper becomes an extra
-    /// `ModelElement::Package`.
+    /// The outer document-level `<UML:Model>` container must be transparent
+    /// — it must NOT create a semantic `Package` element in the model.
+    /// Structural children of the outer wrapper are unparented.
     #[test]
     fn document_model_wrapper_is_transparent() {
         let xmi = r#"<?xml version="1.0"?>
@@ -3704,11 +3753,7 @@ mod tests {
             .iter()
             .filter(|(_, e)| matches!(e, ModelElement::Package(_)))
             .count();
-        assert_eq!(
-            pkg_count, 0,
-            "Outer UML:Model must be transparent (no Package); current \
-             reader creates a Package for every UML:Model element"
-        );
+        assert_eq!(pkg_count, 0, "Outer UML:Model must be transparent (no Package)");
 
         // Two classes survive.
         let class_count = model
@@ -3725,7 +3770,7 @@ mod tests {
         {
             let parents = model.parents_of(id);
             assert!(
-                parents.is_none(),
+                parents == Some(&[]),
                 "Class must be unparented under a transparent wrapper; \
                  got parents: {:?}",
                 parents
