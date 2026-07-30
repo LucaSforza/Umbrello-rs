@@ -7,7 +7,9 @@
 // binary target sees this code as unused.
 #![allow(unused_imports)]
 
-use crate::app::UmbrelloApp;
+use crate::app::{
+    DraftAttribute, DraftOperation, DraftParameter, UmbrelloApp,
+};
 use crate::rendering::{element_color, type_display, visibility_symbol};
 use crate::tool_palette::ToolMode;
 use eframe::App;
@@ -3076,4 +3078,730 @@ fn native_pointer_click_without_motion_creates_no_move() {
     assert!(app.drag_preview_pos.is_none(), "drag_preview_pos must be cleared");
     assert!(app.drag_start_pos.is_none(), "drag_start_pos must be cleared");
     assert_eq!(app.drag_accum_screen_delta, egui::Vec2::ZERO, "accum delta must be zero");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// S2 — Classifier draft and property panel tests
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Helper: create app with a classifier diagram and a Class named "Person"
+/// with one attribute and one operation.
+#[allow(dead_code)]
+fn make_app_with_classifier_features() -> UmbrelloApp {
+    let mut model = UmlModel::new();
+    let d = Diagram::new("ClassDiagram", DiagramKind::Class);
+    model.add_diagram(d);
+    let mut cls = Class::new("Person");
+    cls.classifier.add_attribute(uml_core::Attribute {
+        name: "name".into(),
+        type_ref: TypeReference::primitive("String"),
+        visibility: Visibility::Private,
+        initial_value: None,
+        is_static: false,
+    });
+    cls.classifier.add_operation(uml_core::Operation {
+        name: "getName".into(),
+        return_type: TypeReference::primitive("String"),
+        parameters: vec![uml_core::Parameter {
+            name: "format".into(),
+            type_ref: TypeReference::primitive("bool"),
+            direction: uml_core::ParameterDirection::In,
+            default_value: Some("true".into()),
+        }],
+        visibility: Visibility::Public,
+        is_static: false,
+        is_abstract: false,
+        is_virtual: true,
+    });
+    let id = cls.base.id;
+    model.insert(ModelElement::Class(cls));
+    let mut app = UmbrelloApp::new(model, false);
+    app.active_diagram = Some(0);
+    app.current_file_path = Some(PathBuf::from("/tmp/classifier-test.xmi"));
+    app.selected_element_id = Some(id);
+    app.refresh_property_buffers();
+    app
+}
+
+/// S2-01: Background click in canvas clears selection; click outside does not.
+#[test]
+fn background_click_only_in_canvas_deselects() {
+    let mut app = make_app_with_diagram();
+    let element = Class::new("Target");
+    let id = element.base.id;
+    app.model.insert(ModelElement::Class(element));
+    let diagram_id = app.model.diagrams()[0].id;
+    app.model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(id, ViewNode::new(id, Rect::new(100.0, 100.0, 100.0, 60.0)));
+    app.active_diagram = Some(0);
+    app.select_element(id).unwrap();
+    assert_eq!(app.selected_element_id, Some(id));
+
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let screen_size = egui::vec2(1280.0, 1024.0);
+
+    // Frame 0: establish layout.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+    let canvas = app.last_canvas_rect.unwrap();
+    // Point outside canvas (well to the left)
+    let outside_point = egui::pos2(canvas.left() - 50.0, canvas.top() + 50.0);
+
+    // Click outside canvas — must NOT clear selection.
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: outside_point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: outside_point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+    assert!(
+        app.selected_element_id.is_some(),
+        "Click outside canvas must NOT clear selection"
+    );
+
+    // Click inside canvas, not on any node — MUST clear selection.
+    let inside_point = egui::pos2(canvas.right() - 10.0, canvas.bottom() - 10.0);
+    let _ = ctx.run(
+        raw_with_screen(
+            vec![
+                egui::Event::PointerButton {
+                    pos: inside_point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: inside_point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            screen_size,
+        ),
+        |ctx| {
+            app.update(ctx, &mut frame);
+        },
+    );
+    assert!(
+        app.selected_element_id.is_none(),
+        "Click inside canvas on empty area must clear selection"
+    );
+}
+
+/// S2-02: Classifier draft populated on selection, cleared for non-classifiers.
+#[test]
+fn classifier_draft_populated_and_cleared_by_selection() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    // Classifier draft should exist and have features.
+    assert!(
+        app.classifier_draft.is_some(),
+        "classifier_draft should be populated for classifier"
+    );
+    let (draft_id, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(*draft_id, id);
+    assert_eq!(draft.attributes.len(), 1);
+    assert_eq!(draft.attributes[0].name, "name");
+    assert_eq!(draft.attributes[0].type_text, "String");
+    assert_eq!(draft.operations.len(), 1);
+    assert_eq!(draft.operations[0].name, "getName");
+    assert_eq!(draft.operations[0].return_type_text, "String");
+    assert_eq!(draft.operations[0].parameters.len(), 1);
+    assert_eq!(draft.operations[0].parameters[0].name, "format");
+
+    // Switching to a non-classifier clears classifier draft.
+    let pkg = ModelElement::Package(Package::new("Pkg"));
+    let pkg_id = pkg.id();
+    app.model.insert(pkg);
+    app.select_element(pkg_id).unwrap();
+    assert!(
+        app.classifier_draft.is_none(),
+        "classifier_draft should be None for non-classifier"
+    );
+
+    // Switching back to classifier repopulates.
+    app.select_element(id).unwrap();
+    assert!(
+        app.classifier_draft.is_some(),
+        "classifier_draft should be repopulated for classifier"
+    );
+}
+
+/// S2-03: Classifier draft add/delete attribute programmatically.
+#[test]
+fn classifier_draft_add_delete_attribute() {
+    let mut app = make_app_with_classifier_features();
+    let (_, draft) = app.classifier_draft.as_mut().unwrap();
+    assert_eq!(draft.attributes.len(), 1);
+
+    // Add attribute via direct draft manipulation.
+    draft.attributes.push(DraftAttribute {
+        name: "attribute_1".into(),
+        type_text: "int".into(),
+        original_type: TypeReference::unspecified(),
+        visibility: Visibility::Public,
+        initial_value: String::new(),
+        is_static: false,
+    });
+    assert_eq!(draft.attributes.len(), 2);
+    assert_eq!(draft.attributes[1].name, "attribute_1");
+
+    // Delete first attribute.
+    draft.attributes.remove(0);
+    assert_eq!(draft.attributes.len(), 1);
+    assert_eq!(draft.attributes[0].name, "attribute_1");
+}
+
+/// S2-04: Classifier draft add/delete operation.
+#[test]
+fn classifier_draft_add_delete_operation() {
+    let mut app = make_app_with_classifier_features();
+    let (_, draft) = app.classifier_draft.as_mut().unwrap();
+    assert_eq!(draft.operations.len(), 1);
+    draft.operations.push(DraftOperation {
+        name: "operation_1".into(),
+        return_type_text: "void".into(),
+        original_return_type: TypeReference::unspecified(),
+        parameters: Vec::new(),
+        visibility: Visibility::Public,
+        is_static: false,
+        is_abstract: false,
+        is_virtual: false,
+    });
+    assert_eq!(draft.operations.len(), 2);
+    draft.operations.remove(0);
+    assert_eq!(draft.operations.len(), 1);
+    assert_eq!(draft.operations[0].name, "operation_1");
+}
+
+/// S2-05: Operation parameter add/delete in draft.
+#[test]
+fn classifier_draft_add_delete_parameter() {
+    let mut app = make_app_with_classifier_features();
+    let (_, draft) = app.classifier_draft.as_mut().unwrap();
+    let op = &mut draft.operations[0];
+    assert_eq!(op.parameters.len(), 1);
+
+    op.parameters.push(DraftParameter {
+        name: "parameter_1".into(),
+        type_text: "String".into(),
+        original_type: TypeReference::unspecified(),
+        direction: uml_core::ParameterDirection::In,
+        default_value: String::new(),
+    });
+    assert_eq!(op.parameters.len(), 2);
+
+    op.parameters.remove(0);
+    assert_eq!(op.parameters.len(), 1);
+    assert_eq!(op.parameters[0].name, "parameter_1");
+}
+
+/// S2-06: Applying classifier draft creates one command and updates model.
+#[test]
+fn classifier_draft_apply_creates_one_command() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    // Modify draft: add an attribute.
+    let draft = app
+        .classifier_draft
+        .as_mut()
+        .map(|(_, d)| {
+            d.attributes.push(DraftAttribute {
+                name: "age".into(),
+                type_text: "int".into(),
+                original_type: TypeReference::unspecified(),
+                visibility: Visibility::Private,
+                initial_value: "0".into(),
+                is_static: false,
+            });
+            crate::app::ClassifierDraft {
+                attributes: d.attributes.clone(),
+                operations: d.operations.clone(),
+            }
+        })
+        .unwrap();
+
+    // Apply.
+    let result = app.apply_classifier_draft(id, &draft).unwrap();
+    assert!(result, "Apply should report changes were made");
+    assert_eq!(app.history.undo_depth(), 1, "Apply creates one command");
+    assert!(app.is_dirty, "Apply dirties the model");
+
+    // Verify model has the new attribute.
+    let elem = app.model.get(id).unwrap();
+    let cd = elem.classifier_data().unwrap();
+    assert_eq!(cd.attributes.len(), 2, "Model should have 2 attributes");
+    assert_eq!(cd.attributes[1].name, "age");
+    assert_eq!(cd.attributes[1].type_ref, TypeReference::primitive("int"));
+    assert_eq!(cd.attributes[1].visibility, Visibility::Private);
+    assert_eq!(cd.attributes[1].initial_value, Some("0".to_string()));
+}
+
+/// S2-07: Apply validates non-empty name.
+#[test]
+fn classifier_draft_apply_rejects_empty_name() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    let draft = app
+        .classifier_draft
+        .as_mut()
+        .map(|(_, d)| {
+            d.attributes[0].name = "".into();
+            crate::app::ClassifierDraft {
+                attributes: d.attributes.clone(),
+                operations: d.operations.clone(),
+            }
+        })
+        .unwrap();
+
+    let result = app.apply_classifier_draft(id, &draft);
+    assert!(result.is_err(), "Empty attribute name should be rejected");
+    assert!(
+        result.err().unwrap().contains("empty name"),
+        "Error message should mention empty name"
+    );
+}
+
+/// S2-08: Apply when no changes returns Ok(false) and does not create history.
+#[test]
+fn classifier_draft_apply_noop_returns_false() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    // Clone draft as-is without changes.
+    let draft = app
+        .classifier_draft
+        .as_ref()
+        .map(|(_, d)| crate::app::ClassifierDraft {
+            attributes: d.attributes.clone(),
+            operations: d.operations.clone(),
+        })
+        .unwrap();
+
+    let result = app.apply_classifier_draft(id, &draft).unwrap();
+    assert!(!result, "No-op Apply should return false");
+    assert_eq!(app.history.undo_depth(), 0, "No-op should not create history");
+    assert!(!app.is_dirty, "No-op should not dirty model");
+}
+
+/// S2-09: Classifier draft apply + undo restores original features.
+#[test]
+fn classifier_draft_apply_undo_restores() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    // Get original feature count.
+    let orig_attr_count = {
+        app.model
+            .get(id)
+            .unwrap()
+            .classifier_data()
+            .unwrap()
+            .attributes
+            .len()
+    };
+
+    // Modify draft: delete the existing attribute.
+    let draft = app
+        .classifier_draft
+        .as_mut()
+        .map(|(_, d)| {
+            d.attributes.clear();
+            crate::app::ClassifierDraft {
+                attributes: d.attributes.clone(),
+                operations: d.operations.clone(),
+            }
+        })
+        .unwrap();
+
+    app.apply_classifier_draft(id, &draft).unwrap();
+    assert_eq!(
+        app.model
+            .get(id)
+            .unwrap()
+            .classifier_data()
+            .unwrap()
+            .attributes
+            .len(),
+        0,
+        "After apply, attributes should be empty"
+    );
+
+    // Undo restores original.
+    app.undo_action().unwrap();
+    assert_eq!(
+        app.model
+            .get(id)
+            .unwrap()
+            .classifier_data()
+            .unwrap()
+            .attributes
+            .len(),
+        orig_attr_count,
+        "Undo should restore original attribute count"
+    );
+}
+
+/// S2-10: Revert restores classifier draft from model state.
+#[test]
+fn classifier_draft_revert_restores_from_model() {
+    let mut app = make_app_with_classifier_features();
+
+    // Modify the draft.
+    if let Some((_, ref mut draft)) = app.classifier_draft {
+        draft.attributes[0].name = "changed".into();
+    }
+
+    // Revert via refresh_property_buffers.
+    app.refresh_property_buffers();
+
+    // Verify draft is restored from model.
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes[0].name, "name", "Revert should restore original name");
+}
+
+/// S2-11: Model-backed type reference preserved when type text unchanged.
+#[test]
+fn classifier_draft_preserves_model_backed_type_reference() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    // Add an attribute with a model ID type reference.
+    let model_id = UmlId::new();
+    if let Some((_, ref mut draft)) = app.classifier_draft {
+        draft.attributes[0].original_type = TypeReference::model(model_id);
+        draft.attributes[0].type_text = "SomeElement".into();
+    }
+
+    // Apply: text "SomeElement" doesn't match model's name (model with model_id
+    // doesn't exist in model), so should create primitive.
+    let draft = app
+        .classifier_draft
+        .as_ref()
+        .map(|(_, d)| crate::app::ClassifierDraft {
+            attributes: d.attributes.clone(),
+            operations: d.operations.clone(),
+        })
+        .unwrap();
+    app.apply_classifier_draft(id, &draft).unwrap();
+    let updated = app
+        .model
+        .get(id)
+        .unwrap()
+        .classifier_data()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        updated.attributes[0].type_ref,
+        TypeReference::primitive("SomeElement"),
+        "When model_id doesn't resolve, text becomes primitive"
+    );
+
+    // Now set up a model-backed reference that DOES resolve.
+    let target = Class::new("SomeElement");
+    let target_id = target.base.id;
+    app.model.insert(ModelElement::Class(target));
+    if let Some((_, ref mut draft)) = app.classifier_draft {
+        draft.attributes[0].original_type = TypeReference::model(target_id);
+        draft.attributes[0].type_text = "SomeElement".into();
+    }
+    let draft = app
+        .classifier_draft
+        .as_ref()
+        .map(|(_, d)| crate::app::ClassifierDraft {
+            attributes: d.attributes.clone(),
+            operations: d.operations.clone(),
+        })
+        .unwrap();
+    app.apply_classifier_draft(id, &draft).unwrap();
+    let updated = app
+        .model
+        .get(id)
+        .unwrap()
+        .classifier_data()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        updated.attributes[0].type_ref,
+        TypeReference::model(target_id),
+        "Resolved model reference should be preserved"
+    );
+}
+
+/// S2-12: Clear selection clears classifier draft.
+#[test]
+fn clear_selection_clears_classifier_draft() {
+    let mut app = make_app_with_classifier_features();
+    assert!(app.classifier_draft.is_some());
+    app.clear_selection();
+    assert!(app.classifier_draft.is_none());
+}
+
+/// S2-13: Normalize transient state clears classifier draft.
+#[test]
+fn normalize_transient_state_clears_classifier_draft() {
+    let mut app = make_app_with_classifier_features();
+    assert!(app.classifier_draft.is_some());
+    app.selected_element_id = None;
+    app.normalize_transient_state();
+    assert!(app.classifier_draft.is_none());
+}
+
+/// S2-14: MCP targets exist for classifier draft.
+#[test]
+fn classifier_draft_mcp_targets_exist() {
+    let app = make_app_with_classifier_features();
+    let snapshot = app.qa_snapshot();
+    // Apply and revert targets should exist.
+    assert!(
+        snapshot
+            .targets
+            .iter()
+            .any(|t| t.id == "property.classifier.apply"),
+        "apply target should exist"
+    );
+    assert!(
+        snapshot
+            .targets
+            .iter()
+            .any(|t| t.id == "property.classifier.revert"),
+        "revert target should exist"
+    );
+    // Add attribute target.
+    assert!(
+        snapshot
+            .targets
+            .iter()
+            .any(|t| t.id == "property.classifier.attribute.add"),
+        "add attribute target should exist"
+    );
+    // Attribute name target.
+    assert!(
+        snapshot
+            .targets
+            .iter()
+            .any(|t| t.id == "property.classifier.attribute.0.name"),
+        "attribute name target should exist"
+    );
+    // Operation name target.
+    assert!(
+        snapshot
+            .targets
+            .iter()
+            .any(|t| t.id == "property.classifier.operation.0.name"),
+        "operation name target should exist"
+    );
+    // Parameter name target.
+    assert!(
+        snapshot
+            .targets
+            .iter()
+            .any(|t| t.id == "property.classifier.operation.0.parameter.0.name"),
+        "parameter name target should exist"
+    );
+    // Operation add parameter target.
+    assert!(
+        snapshot
+            .targets
+            .iter()
+            .any(|t| t.id == "property.classifier.operation.0.parameter.add"),
+        "operation add parameter target should exist"
+    );
+}
+
+/// S2-15: MCP classifier draft actions work via QA dispatch.
+#[test]
+fn classifier_draft_mcp_add_attribute_via_qa() {
+    let mut app = make_app_with_classifier_features();
+    let ctx = egui::Context::default();
+
+    // Select add attribute target and click.
+    app.qa_select("property.classifier.attribute.add".into())
+        .unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+
+    // Draft should now have 2 attributes.
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes.len(), 2, "MCP add attribute should create new attribute");
+    assert_eq!(draft.attributes[1].name, "attribute_1");
+
+    // Set the attribute name via MCP set text.
+    app.qa_select("property.classifier.attribute.1.name".into())
+        .unwrap();
+    app.qa_dispatch(
+        crate::app::qa::protocol::QaRequest::SetText {
+            value: "email".into(),
+        },
+        &ctx,
+    )
+    .unwrap();
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes[1].name, "email");
+
+    // Apply via MCP.
+    app.qa_select("property.classifier.apply".into()).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+
+    // Model should now have the new attribute.
+    let id = app.selected_element_id.unwrap();
+    let cd = app.model.get(id).unwrap().classifier_data().unwrap();
+    assert_eq!(cd.attributes.len(), 2);
+    assert_eq!(cd.attributes[1].name, "email");
+}
+
+/// S2-16: Applying primitive type text through the draft propagates to model
+/// and round-trips through the classifier data.
+#[test]
+fn classifier_draft_apply_primitive_type_roundtrips() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    // Modify draft operation return type to a new primitive.
+    let draft = app
+        .classifier_draft
+        .as_mut()
+        .map(|(_, d)| {
+            d.operations[0].return_type_text = "i32".into();
+            crate::app::ClassifierDraft {
+                attributes: d.attributes.clone(),
+                operations: d.operations.clone(),
+            }
+        })
+        .unwrap();
+
+    app.apply_classifier_draft(id, &draft).unwrap();
+
+    let cd = app.model.get(id).unwrap().classifier_data().unwrap();
+    assert_eq!(
+        cd.operations[0].return_type,
+        TypeReference::primitive("i32"),
+        "Primitive type should be stored in model"
+    );
+
+    // Verify the draft repopulates from model with the new type.
+    app.refresh_property_buffers();
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.operations[0].return_type_text, "i32");
+}
+
+/// S2-17: Adding operation parameter with empty name fails on apply.
+#[test]
+fn classifier_draft_apply_rejects_empty_parameter_name() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    let draft = app
+        .classifier_draft
+        .as_mut()
+        .map(|(_, d)| {
+            d.operations[0].parameters[0].name = "".into();
+            crate::app::ClassifierDraft {
+                attributes: d.attributes.clone(),
+                operations: d.operations.clone(),
+            }
+        })
+        .unwrap();
+
+    let result = app.apply_classifier_draft(id, &draft);
+    assert!(result.is_err());
+    assert!(result.err().unwrap().contains("empty name"));
+}
+
+/// S2-18: Draft parameter fields propagate correctly through apply.
+#[test]
+fn classifier_draft_parameter_fields_propagate() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    let draft = app
+        .classifier_draft
+        .as_mut()
+        .map(|(_, d)| {
+            let p = &mut d.operations[0].parameters[0];
+            p.type_text = "u64".into();
+            p.direction = uml_core::ParameterDirection::Out;
+            p.default_value = "42".into();
+            crate::app::ClassifierDraft {
+                attributes: d.attributes.clone(),
+                operations: d.operations.clone(),
+            }
+        })
+        .unwrap();
+
+    app.apply_classifier_draft(id, &draft).unwrap();
+
+    let cd = app.model.get(id).unwrap().classifier_data().unwrap();
+    let param = &cd.operations[0].parameters[0];
+    assert_eq!(param.name, "format");
+    assert_eq!(param.type_ref, TypeReference::primitive("u64"));
+    assert_eq!(param.direction, uml_core::ParameterDirection::Out);
+    assert_eq!(param.default_value, Some("42".to_string()));
+}
+
+/// S2-19: Undo after classifier apply restores parameters correctly.
+#[test]
+fn classifier_draft_undo_restores_parameters() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+
+    let orig_ops = app
+        .model
+        .get(id)
+        .unwrap()
+        .classifier_data()
+        .unwrap()
+        .operations
+        .clone();
+
+    // Modify and apply.
+    let draft = app
+        .classifier_draft
+        .as_mut()
+        .map(|(_, d)| {
+            d.operations[0].parameters[0].default_value = "false".into();
+            crate::app::ClassifierDraft {
+                attributes: d.attributes.clone(),
+                operations: d.operations.clone(),
+            }
+        })
+        .unwrap();
+    app.apply_classifier_draft(id, &draft).unwrap();
+
+    // Undo.
+    app.undo_action().unwrap();
+    let restored_ops = app
+        .model
+        .get(id)
+        .unwrap()
+        .classifier_data()
+        .unwrap()
+        .operations
+        .clone();
+    assert_eq!(restored_ops, orig_ops);
 }

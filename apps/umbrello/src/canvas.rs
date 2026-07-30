@@ -463,21 +463,26 @@ impl UmbrelloApp {
         // doing so steals pointer ownership from the node click_and_drag widgets,
         // preventing native node drag from working (S3/S4 regression).
         // Instead, we inspect the global click state and verify the click was not
-        // on any node rect.
+        // on any node rect and was inside the canvas area.
         if self.current_tool == ToolMode::Select
             && self.selected_element_id.is_some()
             && !selection_handled
             && ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary))
         {
-            let on_a_node = ui
+            let in_canvas = ui
                 .input(|input| input.pointer.press_origin())
                 .or_else(|| ui.ctx().pointer_latest_pos())
-                .is_some_and(|pointer_pos| {
-                    node_rects
-                        .iter()
-                        .any(|(_, rect, _, _)| rect.contains(pointer_pos))
-                });
-            if !on_a_node {
+                .is_some_and(|pointer_pos| canvas_rect.contains(pointer_pos));
+            let on_a_node = in_canvas
+                && ui
+                    .input(|input| input.pointer.press_origin())
+                    .or_else(|| ui.ctx().pointer_latest_pos())
+                    .is_some_and(|pointer_pos| {
+                        node_rects
+                            .iter()
+                            .any(|(_, rect, _, _)| rect.contains(pointer_pos))
+                    });
+            if in_canvas && !on_a_node {
                 self.clear_selection();
                 self.status_message = "Selection cleared".into();
             }

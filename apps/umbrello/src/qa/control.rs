@@ -1,7 +1,7 @@
 //! UI-thread target discovery and action dispatch.
 
 use super::protocol::{QaError, QaRequest, QaResponse, UiSnapshot, UiTarget};
-use crate::app::UmbrelloApp;
+use crate::app::{DraftAttribute, DraftOperation, DraftParameter, UmbrelloApp};
 use crate::tool_palette::ToolMode;
 use uml_core::{commands, ModelElement, UmlId, Visibility};
 
@@ -318,6 +318,268 @@ impl UmbrelloApp {
                         Some(selected.to_string()),
                         None,
                     );
+                    // Classifier draft targets
+                    if let Some((draft_id, draft)) = self.classifier_draft.as_ref() {
+                        if *draft_id == selected {
+                            add(
+                                "property.classifier.apply".into(),
+                                "action",
+                                "Apply Classifier".into(),
+                                true,
+                                false,
+                                Some(selected.to_string()),
+                                None,
+                            );
+                            add(
+                                "property.classifier.revert".into(),
+                                "action",
+                                "Revert Classifier".into(),
+                                true,
+                                false,
+                                Some(selected.to_string()),
+                                None,
+                            );
+                            add(
+                                "property.classifier.attribute.add".into(),
+                                "action",
+                                "Add Attribute".into(),
+                                true,
+                                false,
+                                Some(selected.to_string()),
+                                None,
+                            );
+                            add(
+                                "property.classifier.operation.add".into(),
+                                "action",
+                                "Add Operation".into(),
+                                true,
+                                false,
+                                Some(selected.to_string()),
+                                None,
+                            );
+                            for (i, attr) in draft.attributes.iter().enumerate() {
+                                let prefix = format!("property.classifier.attribute.{i}");
+                                add(
+                                    format!("{prefix}.name"),
+                                    "property",
+                                    format!("Attr {i} name"),
+                                    true,
+                                    false,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.type"),
+                                    "property",
+                                    format!("Attr {i} type"),
+                                    true,
+                                    false,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.initial_value"),
+                                    "property",
+                                    format!("Attr {i} init"),
+                                    true,
+                                    false,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.delete"),
+                                    "action",
+                                    format!("Delete Attr {i}"),
+                                    true,
+                                    false,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.visibility.public"),
+                                    "property",
+                                    format!("Attr {i} Public"),
+                                    true,
+                                    attr.visibility == uml_core::Visibility::Public,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.visibility.protected"),
+                                    "property",
+                                    format!("Attr {i} Protected"),
+                                    true,
+                                    attr.visibility == uml_core::Visibility::Protected,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.visibility.private"),
+                                    "property",
+                                    format!("Attr {i} Private"),
+                                    true,
+                                    attr.visibility == uml_core::Visibility::Private,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.visibility.implementation"),
+                                    "property",
+                                    format!("Attr {i} Implementation"),
+                                    true,
+                                    attr.visibility == uml_core::Visibility::Implementation,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.static"),
+                                    "property",
+                                    format!("Attr {i} Static"),
+                                    true,
+                                    attr.is_static,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                            }
+                            for (i, op) in draft.operations.iter().enumerate() {
+                                let prefix = format!("property.classifier.operation.{i}");
+                                add(
+                                    format!("{prefix}.name"),
+                                    "property",
+                                    format!("Op {i} name"),
+                                    true,
+                                    false,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.return_type"),
+                                    "property",
+                                    format!("Op {i} return type"),
+                                    true,
+                                    false,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.delete"),
+                                    "action",
+                                    format!("Delete Op {i}"),
+                                    true,
+                                    false,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                for (vis_name, vis_value) in [
+                                    ("public", uml_core::Visibility::Public),
+                                    ("protected", uml_core::Visibility::Protected),
+                                    ("private", uml_core::Visibility::Private),
+                                    ("implementation", uml_core::Visibility::Implementation),
+                                ] {
+                                    add(
+                                        format!("{prefix}.visibility.{vis_name}"),
+                                        "property",
+                                        format!("Op {i} {vis_name}"),
+                                        true,
+                                        op.visibility == vis_value,
+                                        Some(selected.to_string()),
+                                        None,
+                                    );
+                                }
+                                add(
+                                    format!("{prefix}.static"),
+                                    "property",
+                                    format!("Op {i} Static"),
+                                    true,
+                                    op.is_static,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.abstract"),
+                                    "property",
+                                    format!("Op {i} Abstract"),
+                                    true,
+                                    op.is_abstract,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.virtual"),
+                                    "property",
+                                    format!("Op {i} Virtual"),
+                                    true,
+                                    op.is_virtual,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                add(
+                                    format!("{prefix}.parameter.add"),
+                                    "action",
+                                    format!("Add Param to Op {i}"),
+                                    true,
+                                    false,
+                                    Some(selected.to_string()),
+                                    None,
+                                );
+                                for (j, param) in op.parameters.iter().enumerate() {
+                                    let pprefix = format!("{prefix}.parameter.{j}");
+                                    add(
+                                        format!("{pprefix}.name"),
+                                        "property",
+                                        format!("Op {i} Param {j} name"),
+                                        true,
+                                        false,
+                                        Some(selected.to_string()),
+                                        None,
+                                    );
+                                    add(
+                                        format!("{pprefix}.type"),
+                                        "property",
+                                        format!("Op {i} Param {j} type"),
+                                        true,
+                                        false,
+                                        Some(selected.to_string()),
+                                        None,
+                                    );
+                                    add(
+                                        format!("{pprefix}.default_value"),
+                                        "property",
+                                        format!("Op {i} Param {j} default"),
+                                        true,
+                                        false,
+                                        Some(selected.to_string()),
+                                        None,
+                                    );
+                                    add(
+                                        format!("{pprefix}.delete"),
+                                        "action",
+                                        format!("Delete Op {i} Param {j}"),
+                                        true,
+                                        false,
+                                        Some(selected.to_string()),
+                                        None,
+                                    );
+                                    for (dir_name, dir_value) in [
+                                        ("in", uml_core::ParameterDirection::In),
+                                        ("out", uml_core::ParameterDirection::Out),
+                                        ("inout", uml_core::ParameterDirection::InOut),
+                                        ("return", uml_core::ParameterDirection::Return),
+                                    ] {
+                                        add(
+                                            format!("{pprefix}.direction.{dir_name}"),
+                                            "property",
+                                            format!("Op {i} Param {j} {dir_name}"),
+                                            true,
+                                            param.direction == dir_value,
+                                            Some(selected.to_string()),
+                                            None,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if self
@@ -756,7 +1018,286 @@ impl UmbrelloApp {
                 return Ok(());
             }
         }
+        if id == "property.classifier.apply" {
+            let selected = self
+                .selected_element_id
+                .ok_or_else(|| QaError::UnavailableTarget(id.into()))?;
+            // Extract draft values before calling apply to avoid borrow conflict.
+            let draft = self
+                .classifier_draft
+                .as_ref()
+                .map(|(_, d)| crate::app::ClassifierDraft {
+                    attributes: d.attributes.clone(),
+                    operations: d.operations.clone(),
+                })
+                .ok_or_else(|| QaError::UnavailableTarget(id.into()))?;
+            match self.apply_classifier_draft(selected, &draft) {
+                Ok(true) => {
+                    self.status_message = "Classifier features updated".into();
+                    self.refresh_property_buffers();
+                },
+                Ok(false) => {
+                    self.status_message = "Classifier unchanged (no changes)".into();
+                },
+                Err(error) => {
+                    self.status_message = format!("Classifier apply failed: {error}");
+                    return Err(QaError::Command(error));
+                },
+            }
+            self.bump_state();
+            return Ok(());
+        }
+        if id == "property.classifier.revert" {
+            self.refresh_property_buffers();
+            self.status_message = "Classifier draft reverted".into();
+            self.bump_state();
+            return Ok(());
+        }
+        if id == "property.classifier.attribute.add" {
+            self.qa_classifier_add_attribute()?;
+            return Ok(());
+        }
+        if id == "property.classifier.operation.add" {
+            self.qa_classifier_add_operation()?;
+            return Ok(());
+        }
+        if let Some(rest) = id.strip_prefix("property.classifier.attribute.") {
+            return self.qa_classifier_attr_dispatch(rest, id);
+        }
+        if let Some(rest) = id.strip_prefix("property.classifier.operation.") {
+            return self.qa_classifier_op_dispatch(rest, id);
+        }
         Err(QaError::UnavailableTarget(id.into()))
+    }
+
+    fn qa_classifier_add_attribute(&mut self) -> Result<(), QaError> {
+        // Pre-compute the next name using the current draft before mutable borrow.
+        let next = {
+            let draft = self
+                .classifier_draft
+                .as_ref()
+                .map(|(_, d)| d)
+                .ok_or_else(|| QaError::UnavailableTarget("classifier draft".into()))?;
+            self.generate_unique_name_in_draft(
+                "attribute",
+                draft.attributes.iter().map(|a| a.name.as_str()),
+            )
+        };
+        let Some((_, ref mut draft)) = self.classifier_draft.as_mut() else {
+            return Err(QaError::UnavailableTarget("classifier draft".into()));
+        };
+        draft.attributes.push(DraftAttribute {
+            name: next,
+            type_text: String::new(),
+            original_type: uml_core::TypeReference::unspecified(),
+            visibility: uml_core::Visibility::Public,
+            initial_value: String::new(),
+            is_static: false,
+        });
+        self.bump_state();
+        Ok(())
+    }
+
+    fn qa_classifier_add_operation(&mut self) -> Result<(), QaError> {
+        // Pre-compute the next name using the current draft before mutable borrow.
+        let next = {
+            let draft = self
+                .classifier_draft
+                .as_ref()
+                .map(|(_, d)| d)
+                .ok_or_else(|| QaError::UnavailableTarget("classifier draft".into()))?;
+            self.generate_unique_name_in_draft(
+                "operation",
+                draft.operations.iter().map(|op| op.name.as_str()),
+            )
+        };
+        let Some((_, ref mut draft)) = self.classifier_draft.as_mut() else {
+            return Err(QaError::UnavailableTarget("classifier draft".into()));
+        };
+        draft.operations.push(DraftOperation {
+            name: next,
+            return_type_text: String::new(),
+            original_return_type: uml_core::TypeReference::unspecified(),
+            parameters: Vec::new(),
+            visibility: uml_core::Visibility::Public,
+            is_static: false,
+            is_abstract: false,
+            is_virtual: false,
+        });
+        self.bump_state();
+        Ok(())
+    }
+
+    fn qa_classifier_attr_dispatch(&mut self, rest: &str, full_id: &str) -> Result<(), QaError> {
+        // rest is "N.action" where action is name/type/initial_value/delete/visibility.X/static
+        let Some(dot_pos) = rest.rfind('.') else {
+            return Err(QaError::UnavailableTarget(full_id.into()));
+        };
+        let index_str = &rest[..dot_pos];
+        let action = &rest[dot_pos + 1..];
+        let index: usize = index_str
+            .parse()
+            .map_err(|_| QaError::UnavailableTarget(full_id.into()))?;
+        let Some((_, ref mut draft)) = self.classifier_draft.as_mut() else {
+            return Err(QaError::UnavailableTarget(full_id.into()));
+        };
+        let Some(attr) = draft.attributes.get_mut(index) else {
+            return Err(QaError::UnavailableTarget(full_id.into()));
+        };
+        match action {
+            "delete" => {
+                draft.attributes.remove(index);
+                self.bump_state();
+                Ok(())
+            },
+            "visibility" => {
+                // "visibility" alone is not actionable through click
+                Err(QaError::UnavailableTarget(full_id.into()))
+            },
+            _ if action.starts_with("visibility.") => {
+                let vis = match &action["visibility.".len()..] {
+                    "public" => uml_core::Visibility::Public,
+                    "protected" => uml_core::Visibility::Protected,
+                    "private" => uml_core::Visibility::Private,
+                    "implementation" => uml_core::Visibility::Implementation,
+                    _ => return Err(QaError::UnavailableTarget(full_id.into())),
+                };
+                attr.visibility = vis;
+                self.bump_state();
+                Ok(())
+            },
+            "static" => {
+                attr.is_static = !attr.is_static;
+                self.bump_state();
+                Ok(())
+            },
+            _ => Err(QaError::UnavailableTarget(full_id.into())),
+        }
+    }
+
+    fn qa_classifier_op_dispatch(&mut self, rest: &str, full_id: &str) -> Result<(), QaError> {
+        // rest could be "add" (top-level) or "N.action" or "N.parameter.add" or "N.parameter.M.action"
+        if rest == "add" {
+            return self.qa_classifier_add_operation();
+        }
+        // Check if it's "N.parameter.add"
+        if let Some(inner) = rest.strip_suffix(".parameter.add") {
+            let op_index: usize = inner
+                .parse()
+                .map_err(|_| QaError::UnavailableTarget(full_id.into()))?;
+            // Pre-compute name before mutable borrow.
+            let next = {
+                let draft = self
+                    .classifier_draft
+                    .as_ref()
+                    .map(|(_, d)| d)
+                    .ok_or_else(|| QaError::UnavailableTarget(full_id.into()))?;
+                let op = draft
+                    .operations
+                    .get(op_index)
+                    .ok_or_else(|| QaError::UnavailableTarget(full_id.into()))?;
+                self.generate_unique_name_in_draft(
+                    "parameter",
+                    op.parameters.iter().map(|p| p.name.as_str()),
+                )
+            };
+            let Some((_, ref mut draft)) = self.classifier_draft.as_mut() else {
+                return Err(QaError::UnavailableTarget(full_id.into()));
+            };
+            let Some(op) = draft.operations.get_mut(op_index) else {
+                return Err(QaError::UnavailableTarget(full_id.into()));
+            };
+            op.parameters.push(DraftParameter {
+                name: next,
+                type_text: String::new(),
+                original_type: uml_core::TypeReference::unspecified(),
+                direction: uml_core::ParameterDirection::In,
+                default_value: String::new(),
+            });
+            self.bump_state();
+            return Ok(());
+        }
+        // Parse "N.action" or "N.parameter.M.action"
+        let (op_part, rest_of_rest) = rest.split_once('.').unwrap_or((rest, ""));
+        let op_index: usize = op_part
+            .parse()
+            .map_err(|_| QaError::UnavailableTarget(full_id.into()))?;
+        let Some((_, ref mut draft)) = self.classifier_draft.as_mut() else {
+            return Err(QaError::UnavailableTarget(full_id.into()));
+        };
+        let Some(op) = draft.operations.get_mut(op_index) else {
+            return Err(QaError::UnavailableTarget(full_id.into()));
+        };
+
+        if let Some(param_rest) = rest_of_rest.strip_prefix("parameter.") {
+            // Handle parameter actions: "M.action"
+            let Some((param_idx_str, param_action)) = param_rest.split_once('.') else {
+                return Err(QaError::UnavailableTarget(full_id.into()));
+            };
+            let param_index: usize = param_idx_str
+                .parse()
+                .map_err(|_| QaError::UnavailableTarget(full_id.into()))?;
+            let Some(param) = op.parameters.get_mut(param_index) else {
+                return Err(QaError::UnavailableTarget(full_id.into()));
+            };
+            match param_action {
+                "delete" => {
+                    op.parameters.remove(param_index);
+                    self.bump_state();
+                    Ok(())
+                },
+                _ if param_action.starts_with("direction.") => {
+                    let dir = match &param_action["direction.".len()..] {
+                        "in" => uml_core::ParameterDirection::In,
+                        "out" => uml_core::ParameterDirection::Out,
+                        "inout" => uml_core::ParameterDirection::InOut,
+                        "return" => uml_core::ParameterDirection::Return,
+                        _ => return Err(QaError::UnavailableTarget(full_id.into())),
+                    };
+                    param.direction = dir;
+                    self.bump_state();
+                    Ok(())
+                },
+                _ => Err(QaError::UnavailableTarget(full_id.into())),
+            }
+        } else {
+            // Handle operation-level actions
+            match rest_of_rest {
+                "delete" => {
+                    draft.operations.remove(op_index);
+                    self.bump_state();
+                    Ok(())
+                },
+                _ if rest_of_rest.starts_with("visibility.") => {
+                    let vis = match &rest_of_rest["visibility.".len()..] {
+                        "public" => uml_core::Visibility::Public,
+                        "protected" => uml_core::Visibility::Protected,
+                        "private" => uml_core::Visibility::Private,
+                        "implementation" => uml_core::Visibility::Implementation,
+                        _ => return Err(QaError::UnavailableTarget(full_id.into())),
+                    };
+                    op.visibility = vis;
+                    self.bump_state();
+                    Ok(())
+                },
+                "static" => {
+                    op.is_static = !op.is_static;
+                    self.bump_state();
+                    Ok(())
+                },
+                "abstract" => {
+                    op.is_abstract = !op.is_abstract;
+                    self.bump_state();
+                    Ok(())
+                },
+                "virtual" => {
+                    op.is_virtual = !op.is_virtual;
+                    self.bump_state();
+                    Ok(())
+                },
+                _ => Err(QaError::UnavailableTarget(full_id.into())),
+            }
+        }
     }
 
     fn qa_set_text(&mut self, id: &str, value: String) -> Result<(), QaError> {
@@ -803,8 +1344,72 @@ impl UmbrelloApp {
             "property.relationship.target_multiplicity" => {
                 self.set_relationship_draft_text(|draft| draft.target_multiplicity = value)
             },
-            _ => Err(QaError::UnavailableTarget(id.into())),
+            _ => self.qa_set_classifier_text(id, value),
         }
+    }
+
+    fn qa_set_classifier_text(&mut self, id: &str, value: String) -> Result<(), QaError> {
+        let Some((_, ref mut draft)) = self.classifier_draft.as_mut() else {
+            return Err(QaError::UnavailableTarget(id.into()));
+        };
+        // Match pattern: property.classifier.attribute.N.field
+        if let Some(rest) = id.strip_prefix("property.classifier.attribute.") {
+            let (index_str, field) = rest.split_once('.').unwrap_or((rest, ""));
+            let index: usize = index_str
+                .parse()
+                .map_err(|_| QaError::UnavailableTarget(id.into()))?;
+            let Some(attr) = draft.attributes.get_mut(index) else {
+                return Err(QaError::UnavailableTarget(id.into()));
+            };
+            match field {
+                "name" => attr.name = value,
+                "type" => attr.type_text = value,
+                "initial_value" => attr.initial_value = value,
+                _ => return Err(QaError::UnavailableTarget(id.into())),
+            }
+            self.bump_state();
+            return Ok(());
+        }
+        // Match pattern: property.classifier.operation.N.field
+        if let Some(rest) = id.strip_prefix("property.classifier.operation.") {
+            // Could be "N.field" or "N.parameter.M.field"
+            let Some((op_idx_str, remainder)) = rest.split_once('.') else {
+                return Err(QaError::UnavailableTarget(id.into()));
+            };
+            let op_index: usize = op_idx_str
+                .parse()
+                .map_err(|_| QaError::UnavailableTarget(id.into()))?;
+            let Some(op) = draft.operations.get_mut(op_index) else {
+                return Err(QaError::UnavailableTarget(id.into()));
+            };
+            if let Some(param_rest) = remainder.strip_prefix("parameter.") {
+                // N.parameter.M.field
+                let Some((param_idx_str, param_field)) = param_rest.split_once('.') else {
+                    return Err(QaError::UnavailableTarget(id.into()));
+                };
+                let param_index: usize = param_idx_str
+                    .parse()
+                    .map_err(|_| QaError::UnavailableTarget(id.into()))?;
+                let Some(param) = op.parameters.get_mut(param_index) else {
+                    return Err(QaError::UnavailableTarget(id.into()));
+                };
+                match param_field {
+                    "name" => param.name = value,
+                    "type" => param.type_text = value,
+                    "default_value" => param.default_value = value,
+                    _ => return Err(QaError::UnavailableTarget(id.into())),
+                }
+            } else {
+                match remainder {
+                    "name" => op.name = value,
+                    "return_type" => op.return_type_text = value,
+                    _ => return Err(QaError::UnavailableTarget(id.into())),
+                }
+            }
+            self.bump_state();
+            return Ok(());
+        }
+        Err(QaError::UnavailableTarget(id.into()))
     }
 
     fn set_relationship_draft_text<F>(&mut self, update: F) -> Result<(), QaError>

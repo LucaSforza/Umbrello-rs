@@ -19,7 +19,48 @@ use std::time::{Duration, Instant};
 pub(crate) mod qa;
 #[path = "viewport.rs"]
 pub(crate) mod viewport;
-use uml_core::{Command, UmlId, UmlModel};
+use uml_core::{Command, ParameterDirection, TypeReference, UmlId, UmlModel, Visibility};
+
+/// Draft of an attribute being edited in the classifier feature editor.
+#[derive(Debug, Clone)]
+pub(crate) struct DraftAttribute {
+    pub(crate) name: String,
+    pub(crate) type_text: String,
+    pub(crate) original_type: TypeReference,
+    pub(crate) visibility: Visibility,
+    pub(crate) initial_value: String,
+    pub(crate) is_static: bool,
+}
+
+/// Draft of an operation parameter being edited.
+#[derive(Debug, Clone)]
+pub(crate) struct DraftParameter {
+    pub(crate) name: String,
+    pub(crate) type_text: String,
+    pub(crate) original_type: TypeReference,
+    pub(crate) direction: ParameterDirection,
+    pub(crate) default_value: String,
+}
+
+/// Draft of an operation being edited in the classifier feature editor.
+#[derive(Debug, Clone)]
+pub(crate) struct DraftOperation {
+    pub(crate) name: String,
+    pub(crate) return_type_text: String,
+    pub(crate) original_return_type: TypeReference,
+    pub(crate) parameters: Vec<DraftParameter>,
+    pub(crate) visibility: Visibility,
+    pub(crate) is_static: bool,
+    pub(crate) is_abstract: bool,
+    pub(crate) is_virtual: bool,
+}
+
+/// Persistent classifier feature values edited before Apply.
+#[derive(Debug, Clone)]
+pub(crate) struct ClassifierDraft {
+    pub(crate) attributes: Vec<DraftAttribute>,
+    pub(crate) operations: Vec<DraftOperation>,
+}
 
 /// Persistent relationship values edited by the inspector before Apply.
 #[derive(Debug, Clone, PartialEq)]
@@ -95,6 +136,9 @@ pub(crate) struct UmbrelloApp {
     /// Relationship draft and the semantic element it belongs to.
     pub(crate) relationship_draft: Option<(UmlId, RelationshipDraft)>,
 
+    /// Classifier feature draft and the semantic element it belongs to.
+    pub(crate) classifier_draft: Option<(UmlId, ClassifierDraft)>,
+
     /// When an edge tool is active, this tracks the source node of a click-drag.
     /// Set to `Some(id)` on mousedown over a node; cleared on mouseup or Escape.
     pub(crate) drag_source_node_id: Option<UmlId>,
@@ -145,6 +189,7 @@ impl UmbrelloApp {
             name_edit_buffer: String::new(),
             documentation_edit_buffer: String::new(),
             relationship_draft: None,
+            classifier_draft: None,
             drag_source_node_id: None,
             pointer_was_down: false,
             selected_qa_target: None,
@@ -226,10 +271,12 @@ impl UmbrelloApp {
             self.name_edit_buffer.clear();
             self.documentation_edit_buffer.clear();
             self.relationship_draft = None;
+            self.classifier_draft = None;
         }
         if self.selected_element_id.is_none() {
             self.documentation_edit_buffer.clear();
             self.relationship_draft = None;
+            self.classifier_draft = None;
         }
         self.current_tool = crate::tool_palette::ToolMode::Select;
         self.preview_position = None;
@@ -245,6 +292,7 @@ impl UmbrelloApp {
         self.name_edit_buffer.clear();
         self.documentation_edit_buffer.clear();
         self.relationship_draft = None;
+        self.classifier_draft = None;
     }
 
     /// Shared drag state machine — begin phase.
@@ -337,6 +385,7 @@ impl UmbrelloApp {
             self.name_edit_buffer.clear();
             self.documentation_edit_buffer.clear();
             self.relationship_draft = None;
+            self.classifier_draft = None;
             return;
         };
         let Some(element) = self.model.get(id) else {
@@ -345,6 +394,59 @@ impl UmbrelloApp {
         };
         self.name_edit_buffer = element.name().to_string();
         self.documentation_edit_buffer = element.base().documentation.clone();
+
+        // Populate classifier draft for classifiers, clear for others.
+        self.classifier_draft = element.classifier_data().map(|cd| {
+            let draft = ClassifierDraft {
+                attributes: cd
+                    .attributes
+                    .iter()
+                    .map(|a| {
+                        let type_text = a.type_ref.display_name(Some(&self.model));
+                        DraftAttribute {
+                            name: a.name.clone(),
+                            type_text: type_text.clone(),
+                            original_type: a.type_ref.clone(),
+                            visibility: a.visibility,
+                            initial_value: a.initial_value.clone().unwrap_or_default(),
+                            is_static: a.is_static,
+                        }
+                    })
+                    .collect(),
+                operations: cd
+                    .operations
+                    .iter()
+                    .map(|op| {
+                        let return_type_text = op.return_type.display_name(Some(&self.model));
+                        DraftOperation {
+                            name: op.name.clone(),
+                            return_type_text: return_type_text.clone(),
+                            original_return_type: op.return_type.clone(),
+                            parameters: op
+                                .parameters
+                                .iter()
+                                .map(|p| {
+                                    let type_text = p.type_ref.display_name(Some(&self.model));
+                                    DraftParameter {
+                                        name: p.name.clone(),
+                                        type_text: type_text.clone(),
+                                        original_type: p.type_ref.clone(),
+                                        direction: p.direction,
+                                        default_value: p.default_value.clone().unwrap_or_default(),
+                                    }
+                                })
+                                .collect(),
+                            visibility: op.visibility,
+                            is_static: op.is_static,
+                            is_abstract: op.is_abstract,
+                            is_virtual: op.is_virtual,
+                        }
+                    })
+                    .collect(),
+            };
+            (id, draft)
+        });
+
         self.relationship_draft = match element {
             uml_core::ModelElement::Relationship(relationship) => Some((
                 id,

@@ -8,10 +8,10 @@
 //! - Documentation text area (commits `ChangeDocumentation` on focus loss)
 //! - Read-only classifier details (attribute and operation listing)
 
-use crate::app::UmbrelloApp;
-use crate::rendering::{type_display, visibility_name, visibility_symbol};
+use crate::app::{DraftAttribute, DraftOperation, DraftParameter, UmbrelloApp};
+use crate::rendering::{visibility_name, visibility_symbol};
 use crate::tool_palette::element_is_compatible_with_diagram;
-use uml_core::{AssociationType, ModelElement};
+use uml_core::{AssociationType, ModelElement, TypeReference, Visibility};
 
 impl UmbrelloApp {
     /// Render the right-side property editor panel.
@@ -175,60 +175,420 @@ impl UmbrelloApp {
             }
         }
 
-        // ── Classifier Details (Read-Only) ─────────────────────────
-        // Extract classifier snapshot data.
-        let classifier_info: Option<ClassifierSnapshot> =
-            self.model.get(selected_id).and_then(|elem| {
-                elem.classifier_data().map(|cd| ClassifierSnapshot {
-                    attrs: cd
-                        .attributes
-                        .iter()
-                        .map(|a| {
-                            (
-                                visibility_symbol(a.visibility),
-                                a.name.clone(),
-                                type_display(&a.type_ref, Some(&self.model)),
-                            )
-                        })
-                        .collect(),
-                    ops: cd
-                        .operations
-                        .iter()
-                        .map(|op| {
-                            let params: Vec<String> = op
-                                .parameters
-                                .iter()
-                                .map(|p| {
-                                    format!(
-                                        "{}: {}",
-                                        p.name,
-                                        type_display(&p.type_ref, Some(&self.model))
-                                    )
-                                })
-                                .collect();
-                            let ret = type_display(&op.return_type, Some(&self.model));
-                            (visibility_symbol(op.visibility), op.name.clone(), params, ret)
-                        })
-                        .collect(),
-                })
-            });
-
-        if let Some(info) = classifier_info {
-            ui.separator();
-            ui.heading("Classifier Details");
-            ui.add_space(4.0);
-
-            ui.label(format!("Attributes ({}):", info.attrs.len()));
-            for (vis, name, type_name) in &info.attrs {
-                ui.label(format!("  {} {}: {}", vis, name, type_name));
-            }
-
-            ui.add_space(4.0);
-            ui.label(format!("Operations ({}):", info.ops.len()));
-            for (vis, name, params, ret) in &info.ops {
-                ui.label(format!("  {} {}({}): {}", vis, name, params.join(", "), ret));
+        // ── Classifier Feature Editor (Editable Draft) ──────────
+        if let Some((draft_id, _)) = self.classifier_draft.clone() {
+            if draft_id == selected_id {
+                self.render_classifier_draft_editor(ui, selected_id);
+            } else {
+                self.refresh_property_buffers();
             }
         }
+    }
+
+    /// Render the editable classifier draft (attributes, operations, parameters).
+    fn render_classifier_draft_editor(&mut self, ui: &mut egui::Ui, id: uml_core::UmlId) {
+        ui.separator();
+        ui.heading("Classifier Features");
+        ui.add_space(4.0);
+
+        // ── Status message area ─────────────────────────────────
+        let mut status = String::new();
+
+        // Take draft ownership to avoid borrow conflicts.
+        let (draft_id, mut draft) = self
+            .classifier_draft
+            .take()
+            .expect("classifier draft must be present");
+
+        // ── Attributes section ───────────────────────────────────
+        ui.label(format!("Attributes ({}):", draft.attributes.len()));
+        let add_attr = ui.button("+ Add Attribute").clicked();
+        if add_attr {
+            let next = self.generate_unique_name_in_draft(
+                "attribute",
+                draft.attributes.iter().map(|a| a.name.as_str()),
+            );
+            draft.attributes.push(DraftAttribute {
+                name: next,
+                type_text: String::new(),
+                original_type: TypeReference::unspecified(),
+                visibility: Visibility::Public,
+                initial_value: String::new(),
+                is_static: false,
+            });
+        }
+
+        let mut delete_attr: Option<usize> = None;
+        for (i, attr) in draft.attributes.iter_mut().enumerate() {
+            ui.push_id(format!("attr_{i}"), |ui| {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("#{i}"));
+                        ui.label("Name:");
+                        ui.text_edit_singleline(&mut attr.name);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Type:");
+                        ui.text_edit_singleline(&mut attr.type_text);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Vis:");
+                        let vis_options = [
+                            Visibility::Public,
+                            Visibility::Protected,
+                            Visibility::Private,
+                            Visibility::Implementation,
+                        ];
+                        let current_label = format!(
+                            "{} {}",
+                            visibility_symbol(attr.visibility),
+                            visibility_name(attr.visibility)
+                        );
+                        egui::ComboBox::from_id_salt(format!("attr_vis_{i}"))
+                            .selected_text(current_label)
+                            .show_ui(ui, |ui| {
+                                for &vis in &vis_options {
+                                    let label = format!(
+                                        "{} {}",
+                                        visibility_symbol(vis),
+                                        visibility_name(vis)
+                                    );
+                                    if ui.selectable_label(attr.visibility == vis, label).clicked()
+                                    {
+                                        attr.visibility = vis;
+                                    }
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Init:");
+                        ui.text_edit_singleline(&mut attr.initial_value);
+                        ui.checkbox(&mut attr.is_static, "Static");
+                    });
+                    if ui.button("× Delete").clicked() {
+                        delete_attr = Some(i);
+                    }
+                });
+            });
+        }
+        if let Some(idx) = delete_attr {
+            draft.attributes.remove(idx);
+        }
+
+        ui.add_space(8.0);
+
+        // ── Operations section ───────────────────────────────────
+        ui.label(format!("Operations ({}):", draft.operations.len()));
+        let add_op = ui.button("+ Add Operation").clicked();
+        if add_op {
+            let next = self.generate_unique_name_in_draft(
+                "operation",
+                draft.operations.iter().map(|op| op.name.as_str()),
+            );
+            draft.operations.push(DraftOperation {
+                name: next,
+                return_type_text: String::new(),
+                original_return_type: TypeReference::unspecified(),
+                parameters: Vec::new(),
+                visibility: Visibility::Public,
+                is_static: false,
+                is_abstract: false,
+                is_virtual: false,
+            });
+        }
+
+        let mut delete_op: Option<usize> = None;
+        for (i, op) in draft.operations.iter_mut().enumerate() {
+            ui.push_id(format!("op_{i}"), |ui| {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("#{i}"));
+                        ui.label("Name:");
+                        ui.text_edit_singleline(&mut op.name);
+                        if ui.button("× Delete").clicked() {
+                            delete_op = Some(i);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Return:");
+                        ui.text_edit_singleline(&mut op.return_type_text);
+                        ui.label("Vis:");
+                        let vis_options = [
+                            Visibility::Public,
+                            Visibility::Protected,
+                            Visibility::Private,
+                            Visibility::Implementation,
+                        ];
+                        let current_label = format!(
+                            "{} {}",
+                            visibility_symbol(op.visibility),
+                            visibility_name(op.visibility)
+                        );
+                        egui::ComboBox::from_id_salt(format!("op_vis_{i}"))
+                            .selected_text(current_label)
+                            .show_ui(ui, |ui| {
+                                for &vis in &vis_options {
+                                    let label = format!(
+                                        "{} {}",
+                                        visibility_symbol(vis),
+                                        visibility_name(vis)
+                                    );
+                                    if ui.selectable_label(op.visibility == vis, label).clicked() {
+                                        op.visibility = vis;
+                                    }
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut op.is_static, "Static");
+                        ui.checkbox(&mut op.is_abstract, "Abstract");
+                        ui.checkbox(&mut op.is_virtual, "Virtual");
+                    });
+
+                    // ── Parameters ─────────────────────────────
+                    ui.add_space(4.0);
+                    ui.label(format!("Parameters ({}):", op.parameters.len()));
+                    let add_param = ui.button("+ Add Parameter").clicked();
+                    if add_param {
+                        let next = self.generate_unique_name_in_draft(
+                            "parameter",
+                            op.parameters.iter().map(|p| p.name.as_str()),
+                        );
+                        op.parameters.push(DraftParameter {
+                            name: next,
+                            type_text: String::new(),
+                            original_type: TypeReference::unspecified(),
+                            direction: uml_core::ParameterDirection::In,
+                            default_value: String::new(),
+                        });
+                    }
+
+                    let mut delete_param: Option<usize> = None;
+                    for (j, param) in op.parameters.iter_mut().enumerate() {
+                        ui.push_id(format!("param_{i}_{j}"), |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("#{j}"));
+                                ui.label("N:");
+                                ui.text_edit_singleline(&mut param.name);
+                                ui.label("T:");
+                                ui.text_edit_singleline(&mut param.type_text);
+                                ui.label("Dir:");
+                                let dir_options = [
+                                    uml_core::ParameterDirection::In,
+                                    uml_core::ParameterDirection::Out,
+                                    uml_core::ParameterDirection::InOut,
+                                    uml_core::ParameterDirection::Return,
+                                ];
+                                let dir_label = param.direction.as_str();
+                                egui::ComboBox::from_id_salt(format!("param_dir_{i}_{j}"))
+                                    .selected_text(dir_label)
+                                    .show_ui(ui, |ui| {
+                                        for &dir in &dir_options {
+                                            if ui
+                                                .selectable_label(
+                                                    param.direction == dir,
+                                                    dir.as_str(),
+                                                )
+                                                .clicked()
+                                            {
+                                                param.direction = dir;
+                                            }
+                                        }
+                                    });
+                                ui.label("Def:");
+                                ui.text_edit_singleline(&mut param.default_value);
+                                if ui.button("×").clicked() {
+                                    delete_param = Some(j);
+                                }
+                            });
+                        });
+                    }
+                    if let Some(idx) = delete_param {
+                        op.parameters.remove(idx);
+                    }
+                });
+            });
+        }
+        if let Some(idx) = delete_op {
+            draft.operations.remove(idx);
+        }
+
+        ui.add_space(4.0);
+
+        // ── Apply / Revert buttons ──────────────────────────────
+        ui.horizontal(|ui| {
+            if ui.button("Apply").clicked() {
+                match self.apply_classifier_draft(id, &draft) {
+                    Ok(true) => {
+                        status = "Classifier features updated".into();
+                        // Restore from model after apply
+                        self.refresh_property_buffers();
+                    },
+                    Ok(false) => {
+                        status = "Classifier unchanged (no changes)".into();
+                    },
+                    Err(error) => {
+                        status = format!("Apply failed: {error}");
+                        // Restore draft in case of error
+                        self.classifier_draft = Some((draft_id, draft));
+                    },
+                }
+                self.status_message = status.clone();
+                if status.contains("failed") {
+                    // draft was restored in Err arm; do not overwrite
+                } else {
+                    return; // UI will re-render on next frame
+                }
+            }
+            if ui.button("Revert").clicked() {
+                self.refresh_property_buffers();
+                self.status_message = "Classifier draft reverted".into();
+            }
+        });
+    }
+}
+
+impl UmbrelloApp {
+    /// Apply the classifier draft — validates names, converts type text,
+    /// builds replacement ClassifierData, and executes UpdateClassifierFeatures.
+    ///
+    /// Returns `Ok(true)` if applied with changes, `Ok(false)` if no changes,
+    /// `Err` with a description on validation failure.
+    pub(crate) fn apply_classifier_draft(
+        &mut self,
+        id: uml_core::UmlId,
+        draft: &crate::app::ClassifierDraft,
+    ) -> Result<bool, String> {
+        // Validate non-empty names
+        for (i, attr) in draft.attributes.iter().enumerate() {
+            if attr.name.trim().is_empty() {
+                return Err(format!("Attribute {} has an empty name", i));
+            }
+        }
+        for (i, op) in draft.operations.iter().enumerate() {
+            if op.name.trim().is_empty() {
+                return Err(format!("Operation {} has an empty name", i));
+            }
+            for (j, param) in op.parameters.iter().enumerate() {
+                if param.name.trim().is_empty() {
+                    return Err(format!("Operation {} parameter {} has an empty name", i, j));
+                }
+            }
+        }
+
+        // Build replacement ClassifierData
+        let current_data = self
+            .model
+            .get(id)
+            .and_then(|elem| elem.classifier_data().cloned())
+            .ok_or_else(|| "selected element is not a classifier".to_string())?;
+
+        let replacement = uml_core::ClassifierData {
+            attributes: draft
+                .attributes
+                .iter()
+                .map(|da| uml_core::Attribute {
+                    name: da.name.clone(),
+                    type_ref: self.resolve_draft_type(da.type_text.clone(), &da.original_type),
+                    visibility: da.visibility,
+                    initial_value: optional_text(&da.initial_value),
+                    is_static: da.is_static,
+                })
+                .collect(),
+            operations: draft
+                .operations
+                .iter()
+                .map(|dop| {
+                    let return_type = self.resolve_draft_type(
+                        dop.return_type_text.clone(),
+                        &dop.original_return_type,
+                    );
+                    uml_core::Operation {
+                        name: dop.name.clone(),
+                        return_type,
+                        parameters: dop
+                            .parameters
+                            .iter()
+                            .map(|dp| uml_core::Parameter {
+                                name: dp.name.clone(),
+                                type_ref: self
+                                    .resolve_draft_type(dp.type_text.clone(), &dp.original_type),
+                                direction: dp.direction,
+                                default_value: optional_text(&dp.default_value),
+                            })
+                            .collect(),
+                        visibility: dop.visibility,
+                        is_static: dop.is_static,
+                        is_abstract: dop.is_abstract,
+                        is_virtual: dop.is_virtual,
+                    }
+                })
+                .collect(),
+            templates: current_data.templates.clone(),
+        };
+
+        if replacement == current_data {
+            return Ok(false);
+        }
+
+        let command =
+            uml_core::commands::UpdateClassifierFeatures::new(&self.model, id, replacement)
+                .map_err(|error| error.to_string())?;
+        self.execute_command_result(Box::new(command))
+            .map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
+    /// Resolve draft type text to a TypeReference.
+    ///
+    /// - If the text is empty, returns unspecified.
+    /// - If the text matches the displayed name of the original type and the
+    ///   original has a model_id (i.e., was never user-edited), preserves the
+    ///   original model-backed reference.
+    /// - Otherwise creates a primitive type reference from the text.
+    fn resolve_draft_type(&self, type_text: String, original: &TypeReference) -> TypeReference {
+        let text = type_text.trim().to_string();
+        if text.is_empty() {
+            return TypeReference::unspecified();
+        }
+        // The draft stores type_text as the displayed name (from display_name).
+        // If type_text matches the original type_name, it was not edited -> keep original.
+        if let Some(ref orig_name) = original.type_name {
+            if *orig_name == text {
+                return original.clone();
+            }
+        }
+        // If original has model_id, look up its display name. If it matches,
+        // the user didn't edit the field -> keep original.
+        if let Some(model_id) = original.model_id {
+            let orig_display = self
+                .model
+                .get(model_id)
+                .map(|e| e.name().to_string())
+                .unwrap_or_default();
+            if orig_display == text {
+                return original.clone();
+            }
+        }
+        TypeReference::primitive(text)
+    }
+
+    pub(crate) fn generate_unique_name_in_draft<'a>(
+        &self,
+        base: &str,
+        existing_names: impl Iterator<Item = &'a str>,
+    ) -> String {
+        let existing: std::collections::HashSet<&str> = existing_names.collect();
+        let prefix = format!("{base}_");
+        let mut suffixes: Vec<u64> = existing
+            .iter()
+            .filter_map(|name| name.strip_prefix(&prefix)?.parse().ok())
+            .collect();
+        suffixes.sort_unstable();
+        let next = (1u64..)
+            .find(|candidate| suffixes.binary_search(candidate).is_err())
+            .unwrap_or(1);
+        format!("{base}_{next}")
     }
 }
 
@@ -411,10 +771,4 @@ fn optional_text(value: &str) -> Option<String> {
 fn relationship_text_edit(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.label(label);
     ui.text_edit_singleline(value);
-}
-
-/// Snapshot of classifier data for rendering without holding model borrows.
-struct ClassifierSnapshot {
-    attrs: Vec<(&'static str, String, String)>,
-    ops: Vec<(&'static str, String, Vec<String>, String)>,
 }
