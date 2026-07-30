@@ -1129,8 +1129,10 @@ impl UmbrelloApp {
     }
 
     fn qa_classifier_attr_dispatch(&mut self, rest: &str, full_id: &str) -> Result<(), QaError> {
-        // rest is "N.action" where action is name/type/initial_value/delete/visibility.X/static
-        let Some(dot_pos) = rest.rfind('.') else {
+        // rest is "N.action" where action may contain further dots
+        // (e.g. "0.visibility.private").  Use split_once on the first
+        // dot so that index_str is the bare numeric index.
+        let Some(dot_pos) = rest.find('.') else {
             return Err(QaError::UnavailableTarget(full_id.into()));
         };
         let index_str = &rest[..dot_pos];

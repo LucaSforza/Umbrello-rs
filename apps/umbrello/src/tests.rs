@@ -4536,3 +4536,121 @@ fn native_property_panel_click_preserves_selection() {
         "classifier_draft must be cleared after deselection"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// S2F4 — MCP classifier attribute visibility dispatch fix
+// ═══════════════════════════════════════════════════════════════════════
+
+/// S2F4-01: All four advertised attribute visibility targets are
+/// clickable via MCP dispatch and correctly update the draft.
+#[test]
+fn classifier_draft_mcp_attribute_visibility_all_values() {
+    let mut app = make_app_with_classifier_features();
+    let ctx = egui::Context::default();
+
+    for (target_suffix, expected_vis) in [
+        ("public", Visibility::Public),
+        ("protected", Visibility::Protected),
+        ("private", Visibility::Private),
+        ("implementation", Visibility::Implementation),
+    ] {
+        let target_id = format!("property.classifier.attribute.0.visibility.{target_suffix}");
+        // Verify the target is advertised in the snapshot.
+        let snapshot = app.qa_snapshot();
+        assert!(
+            snapshot.targets.iter().any(|t| t.id == target_id),
+            "Target {target_id} must be advertised"
+        );
+
+        // Set initial visibility to Public so each test has a known starting point.
+        if let Some((_, ref mut draft)) = app.classifier_draft {
+            draft.attributes[0].visibility = Visibility::Public;
+        }
+
+        // Select and click the target.
+        app.qa_select(target_id.clone()).unwrap();
+        app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+            .unwrap();
+
+        // Verify the draft visibility changed.
+        let (_, draft) = app.classifier_draft.as_ref().unwrap();
+        assert_eq!(
+            draft.attributes[0].visibility, expected_vis,
+            "Visibility should be {expected_vis:?} after clicking {target_id}"
+        );
+    }
+}
+
+/// S2F4-02: Invalid/stale attribute indices return UnavailableTarget.
+#[test]
+fn classifier_draft_mcp_attribute_invalid_index_fails() {
+    let mut app = make_app_with_classifier_features();
+
+    // Attempt to click visibility on a non-existent attribute index.
+    let result = app.qa_select("property.classifier.attribute.99.visibility.public".into());
+    assert!(result.is_err(), "Non-existent index should fail selection");
+    // The draft must be unchanged — it still has 1 attribute.
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes.len(), 1);
+}
+
+/// S2F4-03: Static and delete attribute targets still work correctly.
+#[test]
+fn classifier_draft_mcp_attribute_static_and_delete() {
+    let mut app = make_app_with_classifier_features();
+    let ctx = egui::Context::default();
+
+    // Static toggle.
+    app.qa_select("property.classifier.attribute.0.static".into())
+        .unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert!(draft.attributes[0].is_static, "Static toggle should set is_static=true");
+
+    // Toggle again.
+    app.qa_select("property.classifier.attribute.0.static".into())
+        .unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert!(!draft.attributes[0].is_static, "Static toggle should set is_static=false");
+
+    // Delete attribute.
+    app.qa_select("property.classifier.attribute.0.delete".into())
+        .unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes.len(), 0, "Delete should remove the attribute");
+}
+
+/// S2F4-04: Operation visibility targets also work (adjacent dispatch test).
+#[test]
+fn classifier_draft_mcp_operation_visibility() {
+    let mut app = make_app_with_classifier_features();
+    let ctx = egui::Context::default();
+
+    let target_id = "property.classifier.operation.0.visibility.protected".to_string();
+    let snapshot = app.qa_snapshot();
+    assert!(
+        snapshot.targets.iter().any(|t| t.id == target_id),
+        "Operation visibility target must be advertised"
+    );
+
+    // Set initial to Public.
+    if let Some((_, ref mut draft)) = app.classifier_draft {
+        draft.operations[0].visibility = Visibility::Public;
+    }
+
+    app.qa_select(target_id.clone()).unwrap();
+    app.qa_dispatch(crate::app::qa::protocol::QaRequest::Click { position: None }, &ctx)
+        .unwrap();
+
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(
+        draft.operations[0].visibility,
+        Visibility::Protected,
+        "Operation visibility should change after click"
+    );
+}
