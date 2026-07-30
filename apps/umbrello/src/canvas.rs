@@ -1005,21 +1005,31 @@ impl UmbrelloApp {
             .edges
             .values()
             .filter_map(|edge| {
+                // Skip edges whose relationship is not a Relationship.
+                let kind = match self.model.get(edge.relationship_id) {
+                    Some(ModelElement::Relationship(rel)) => rel.kind,
+                    _ => return None,
+                };
                 let src = diagram.get_node(edge.source_node_id)?;
                 let tgt = diagram.get_node(edge.target_node_id)?;
-                let kind = match self.model.get(edge.relationship_id) {
-                    Some(ModelElement::Relationship(relationship)) => relationship.kind,
-                    _ => {
-                        return Some(ScreenEdgePath {
-                            relationship_id: edge.relationship_id,
-                            points: edge_path_points(src, tgt, edge, transform),
-                            kind: AssociationType::Association,
-                        })
-                    },
+                // Substitute drag-preview bounds for a dragged endpoint.
+                let src_bounds = if self.drag_node_id == Some(edge.source_node_id) {
+                    self.drag_preview_pos.map_or(src.bounds, |pos| {
+                        uml_core::Rect::new(pos.x, pos.y, src.bounds.width(), src.bounds.height())
+                    })
+                } else {
+                    src.bounds
+                };
+                let tgt_bounds = if self.drag_node_id == Some(edge.target_node_id) {
+                    self.drag_preview_pos.map_or(tgt.bounds, |pos| {
+                        uml_core::Rect::new(pos.x, pos.y, tgt.bounds.width(), tgt.bounds.height())
+                    })
+                } else {
+                    tgt.bounds
                 };
                 Some(ScreenEdgePath {
                     relationship_id: edge.relationship_id,
-                    points: edge_path_points(src, tgt, edge, transform),
+                    points: clipped_edge_path_points(&src_bounds, &tgt_bounds, edge, transform),
                     kind,
                 })
             })
@@ -1030,23 +1040,12 @@ impl UmbrelloApp {
     fn draw_edges(&self, diagram: &Diagram, ui: &egui::Ui) {
         let painter = ui.painter();
         for path in self.screen_edge_paths(diagram, ui.max_rect().min) {
-            let [src_center, .., tgt_center] = path.points.as_slice() else {
-                continue;
-            };
-            let rel_kind = path.kind;
-            let final_dir = *tgt_center - path.points[path.points.len() - 2];
-            let final_len = final_dir.length();
-            if final_len < 1.0 {
+            if path.points.len() < 2 {
                 continue;
             }
-            let final_unit = final_dir / final_len;
-            let final_perp = egui::vec2(-final_unit.y, final_unit.x);
-            if self.selected_element_id == Some(path.relationship_id)
-                && matches!(
-                    self.model.get(path.relationship_id),
-                    Some(ModelElement::Relationship(_))
-                )
-            {
+
+            // ── Selection highlight ──────────────────────────────────
+            if self.selected_element_id == Some(path.relationship_id) {
                 for segment in path.points.windows(2) {
                     painter.line_segment(
                         [segment[0], segment[1]],
@@ -1057,91 +1056,157 @@ impl UmbrelloApp {
                     );
                 }
             }
-            let dir = *tgt_center - *src_center;
-            let len = dir.length();
-            if len < 1.0 {
+
+            // ── Last segment direction (for target notation) ─────────
+            let last_dir = path.points[path.points.len() - 1] - path.points[path.points.len() - 2];
+            let last_len = last_dir.length();
+            if last_len < 1.0 {
                 continue;
             }
-            let unit = dir / len;
-            let perp = egui::vec2(-unit.y, unit.x);
+            let last_unit = last_dir / last_len;
+            let last_perp = egui::vec2(-last_unit.y, last_unit.x);
+
+            // ── First segment direction (for source diamonds) ────────
+            let first_dir = path.points[1] - path.points[0];
+            let first_len = first_dir.length();
+            if first_len < 1.0 {
+                continue;
+            }
+            let first_unit = first_dir / first_len;
+            let first_perp = egui::vec2(-first_unit.y, first_unit.x);
+
             let black = egui::Color32::BLACK;
             let gray = egui::Color32::from_gray(100);
 
-            let tip = *tgt_center - final_unit * 20.0;
-            let draw_path = |stroke: egui::Stroke| {
-                for (index, segment) in path.points.windows(2).enumerate() {
-                    let end = if index + 2 == path.points.len() {
-                        tip
-                    } else {
-                        segment[1]
-                    };
-                    painter.line_segment([segment[0], end], stroke);
-                }
-            };
-            let draw_dashed_path = |stroke: egui::Stroke| {
-                for (index, segment) in path.points.windows(2).enumerate() {
-                    let end = if index + 2 == path.points.len() {
-                        tip
-                    } else {
-                        segment[1]
-                    };
-                    draw_dashed_line(painter, segment[0], end, stroke);
-                }
-            };
+            // ── Target boundary point — last point in the path ───────
+            let boundary_tgt = path.points[path.points.len() - 1];
 
-            match rel_kind {
+            match path.kind {
                 AssociationType::Generalization => {
-                    draw_path(egui::Stroke::new(1.5, black));
-                    draw_hollow_triangle(painter, tip, final_unit, final_perp, black);
+                    for segment in path.points.windows(2) {
+                        painter
+                            .line_segment([segment[0], segment[1]], egui::Stroke::new(1.5, black));
+                    }
+                    draw_hollow_triangle(painter, boundary_tgt, last_unit, last_perp, black);
                 },
                 AssociationType::Realization => {
-                    draw_dashed_path(egui::Stroke::new(1.5, black));
-                    draw_hollow_triangle(painter, tip, final_unit, final_perp, black);
+                    for segment in path.points.windows(2) {
+                        draw_dashed_line(
+                            painter,
+                            segment[0],
+                            segment[1],
+                            egui::Stroke::new(1.5, black),
+                        );
+                    }
+                    draw_hollow_triangle(painter, boundary_tgt, last_unit, last_perp, black);
                 },
                 AssociationType::Aggregation => {
-                    let diamond_center = *src_center;
-                    draw_path(egui::Stroke::new(1.5, black));
-                    draw_hollow_diamond(painter, diamond_center, unit, perp, black);
+                    for segment in path.points.windows(2) {
+                        painter
+                            .line_segment([segment[0], segment[1]], egui::Stroke::new(1.5, black));
+                    }
+                    // Diamond center: one half-length outward from source boundary.
+                    let diamond_center = path.points[0] + first_unit * 8.0;
+                    draw_hollow_diamond(painter, diamond_center, first_unit, first_perp, black);
                 },
                 AssociationType::Composition => {
-                    let diamond_center = *src_center;
-                    draw_path(egui::Stroke::new(1.5, black));
-                    draw_filled_diamond(painter, diamond_center, unit, perp, black);
+                    for segment in path.points.windows(2) {
+                        painter
+                            .line_segment([segment[0], segment[1]], egui::Stroke::new(1.5, black));
+                    }
+                    // Diamond center: one half-length outward from source boundary.
+                    let diamond_center = path.points[0] + first_unit * 8.0;
+                    draw_filled_diamond(painter, diamond_center, first_unit, first_perp, black);
                 },
                 AssociationType::Dependency => {
-                    draw_dashed_path(egui::Stroke::new(1.0, gray));
-                    draw_open_arrow(painter, tip, final_unit, final_perp, gray);
+                    for segment in path.points.windows(2) {
+                        draw_dashed_line(
+                            painter,
+                            segment[0],
+                            segment[1],
+                            egui::Stroke::new(1.0, gray),
+                        );
+                    }
+                    draw_open_arrow(painter, boundary_tgt, last_unit, last_perp, gray);
                 },
                 _ => {
-                    draw_path(egui::Stroke::new(1.0, gray));
+                    for segment in path.points.windows(2) {
+                        painter
+                            .line_segment([segment[0], segment[1]], egui::Stroke::new(1.0, gray));
+                    }
                 },
             }
         }
     }
 }
 
-fn edge_path_points(
-    source: &ViewNode,
-    target: &ViewNode,
+/// Find the point on the boundary of an axis-aligned rectangle where a ray
+/// from `center` toward `toward` exits the rectangle.
+///
+/// Uses a slab/ray-AABB intersection.  Returns `toward` as a finite-safe
+/// fallback when the direction is degenerate.
+pub(crate) fn rect_exit_point(rect: &uml_core::Rect, center: Point, toward: Point) -> Point {
+    let dir = Point::new(toward.x - center.x, toward.y - center.y);
+    let len_sq = dir.x * dir.x + dir.y * dir.y;
+    if len_sq < 1e-12 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return toward;
+    }
+    let left = rect.x();
+    let right = rect.x() + rect.width();
+    let top = rect.y();
+    let bottom = rect.y() + rect.height();
+    // t values for each slab, always ordered entry ≤ exit.
+    let (t_exit_x,) = if dir.x >= 0.0 {
+        ((right - center.x) / dir.x,)
+    } else {
+        ((left - center.x) / dir.x,)
+    };
+    let (t_exit_y,) = if dir.y >= 0.0 {
+        ((bottom - center.y) / dir.y,)
+    } else {
+        ((top - center.y) / dir.y,)
+    };
+    let exit_t = t_exit_x.min(t_exit_y);
+    // Starting from inside the rect, exit_t > 0.
+    if !exit_t.is_finite() || exit_t <= 0.0 {
+        return toward;
+    }
+    Point::new(center.x + dir.x * exit_t, center.y + dir.y * exit_t)
+}
+
+/// Build a clipped edge path in screen coordinates from source bounds to
+/// target bounds with waypoints preserved.  The first point lies on the
+/// source rectangle boundary and the last point on the target rectangle
+/// boundary.
+fn clipped_edge_path_points(
+    source_bounds: &uml_core::Rect,
+    target_bounds: &uml_core::Rect,
     edge: &uml_core::ViewEdge,
     transform: crate::app::viewport::ViewportTransform,
 ) -> Vec<egui::Pos2> {
-    let source = Point::new(
-        source.bounds.x() + source.bounds.width() / 2.0,
-        source.bounds.y() + source.bounds.height() / 2.0,
+    let src_center = Point::new(
+        source_bounds.x() + source_bounds.width() / 2.0,
+        source_bounds.y() + source_bounds.height() / 2.0,
     );
-    let target = Point::new(
-        target.bounds.x() + target.bounds.width() / 2.0,
-        target.bounds.y() + target.bounds.height() / 2.0,
+    let tgt_center = Point::new(
+        target_bounds.x() + target_bounds.width() / 2.0,
+        target_bounds.y() + target_bounds.height() / 2.0,
     );
-    let mut points = Vec::with_capacity(edge.waypoints.len() + 2);
-    points.push(transform.model_to_screen(source));
-    points.extend(
-        edge.waypoints
-            .iter()
-            .copied()
-            .map(|point| transform.model_to_screen(point)),
-    );
-    points.push(transform.model_to_screen(target));
-    points
+
+    // Determine the external direction for first and last segments.
+    let first_toward = edge.waypoints.first().copied().unwrap_or(tgt_center);
+    let last_from = edge.waypoints.last().copied().unwrap_or(src_center);
+
+    let clipped_src = rect_exit_point(source_bounds, src_center, first_toward);
+    let clipped_tgt = rect_exit_point(target_bounds, tgt_center, last_from);
+
+    let mut model_points = Vec::with_capacity(edge.waypoints.len() + 2);
+    model_points.push(clipped_src);
+    model_points.extend(edge.waypoints.iter().copied());
+    model_points.push(clipped_tgt);
+
+    model_points
+        .into_iter()
+        .map(|p| transform.model_to_screen(p))
+        .collect()
 }

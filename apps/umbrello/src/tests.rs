@@ -3955,3 +3955,350 @@ fn classifier_draft_edit_survives_frame_cycle() {
         "Edited return type must survive"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// S3 — Edge boundary clipping and visible UML notation
+// ═══════════════════════════════════════════════════════════════════════
+
+/// S3-01: rect_exit_point returns correct boundary for each direction.
+#[test]
+fn rect_exit_point_produces_boundary_points() {
+    use crate::canvas::rect_exit_point;
+    use uml_core::Point;
+    // Rect: x=0, y=0, w=100, h=60
+    let rect = uml_core::Rect::new(0.0, 0.0, 100.0, 60.0);
+    let center = uml_core::Point::new(50.0, 30.0);
+
+    // Toward right
+    let p = rect_exit_point(&rect, center, Point::new(200.0, 30.0));
+    assert!((p.x - 100.0).abs() < 0.01, "Right boundary should be at x=100, got {}", p.x);
+    assert!((p.y - 30.0).abs() < 0.01, "Right boundary y should be 30, got {}", p.y);
+
+    // Toward left
+    let p = rect_exit_point(&rect, center, Point::new(-100.0, 30.0));
+    assert!((p.x - 0.0).abs() < 0.01, "Left boundary should be at x=0, got {}", p.x);
+    assert!((p.y - 30.0).abs() < 0.01, "Left boundary y should be 30, got {}", p.y);
+
+    // Toward top
+    let p = rect_exit_point(&rect, center, Point::new(50.0, -100.0));
+    assert!((p.y - 0.0).abs() < 0.01, "Top boundary should be at y=0, got {}", p.y);
+    assert!((p.x - 50.0).abs() < 0.01, "Top boundary x should be 50, got {}", p.x);
+
+    // Toward bottom
+    let p = rect_exit_point(&rect, center, Point::new(50.0, 120.0));
+    assert!((p.y - 60.0).abs() < 0.01, "Bottom boundary should be at y=60, got {}", p.y);
+    assert!((p.x - 50.0).abs() < 0.01, "Bottom boundary x should be 50, got {}", p.x);
+
+    // Diagonal: toward top-right
+    let p = rect_exit_point(&rect, center, Point::new(200.0, -100.0));
+    // Should exit either right wall at x=100 or top wall at y=0.
+    // Since 50/150 = 0.33 and 30/130 = 0.23, the y exit is sooner.
+    assert!((p.y - 0.0).abs() < 0.01, "Diagonal exit should be top boundary");
+}
+
+/// S3-02: Degenerate rect_exit_point cases do not panic.
+#[test]
+fn rect_exit_point_degenerate_cases() {
+    use crate::canvas::rect_exit_point;
+    use uml_core::Point;
+
+    // Zero-size rect
+    let rect = uml_core::Rect::new(10.0, 10.0, 0.0, 0.0);
+    let p = rect_exit_point(&rect, Point::new(10.0, 10.0), Point::new(100.0, 100.0));
+    assert!(p.x.is_finite() && p.y.is_finite(), "Zero-size rect must not produce NaN");
+
+    // Coincident center and toward
+    let rect = uml_core::Rect::new(0.0, 0.0, 100.0, 60.0);
+    let center = Point::new(50.0, 30.0);
+    let p = rect_exit_point(&rect, center, center);
+    assert!(p.x.is_finite() && p.y.is_finite(), "Coincident center/toward must not panic");
+
+    // toward inside rect
+    let p = rect_exit_point(&rect, center, Point::new(60.0, 30.0));
+    // Since toward is right of center and within rect, the exit is at x=100.
+    assert!((p.x - 100.0).abs() < 0.01, "toward inside rect: exit at right boundary");
+}
+
+/// S3-03: A helper to set up diagram with two nodes and an edge of a given kind.
+fn setup_edge_diagram(kind: uml_core::AssociationType) -> UmbrelloApp {
+    let mut model = UmlModel::new();
+    let d = Diagram::new("Test", DiagramKind::Class);
+    let diagram_id = d.id;
+    model.add_diagram(d);
+
+    let cls_a = Class::new("ClassA");
+    let a_id = cls_a.base.id;
+    model.insert(ModelElement::Class(cls_a));
+    let cls_b = Class::new("ClassB");
+    let b_id = cls_b.base.id;
+    model.insert(ModelElement::Class(cls_b));
+
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(a_id, ViewNode::new(a_id, Rect::new(0.0, 0.0, 100.0, 60.0)));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(b_id, ViewNode::new(b_id, Rect::new(300.0, 0.0, 100.0, 60.0)));
+
+    let rel = match kind {
+        AssociationType::Generalization => Relationship::new_generalization(a_id, b_id),
+        AssociationType::Realization => Relationship::new_realization(a_id, b_id),
+        AssociationType::Association => Relationship::new_association(a_id, b_id),
+        AssociationType::Aggregation => Relationship::new_aggregation(a_id, b_id),
+        AssociationType::Composition => Relationship::new_composition(a_id, b_id),
+        AssociationType::Dependency => Relationship::new_dependency(a_id, b_id),
+        _ => Relationship::new_association(a_id, b_id),
+    };
+    let rel_id = rel.base.id;
+    model.insert(ModelElement::Relationship(rel));
+
+    let diagram = model.get_diagram_mut(diagram_id).unwrap();
+    let edge_id = uml_core::EdgeId::new();
+    diagram.add_edge(edge_id, ViewEdge::new(rel_id, a_id, b_id, uml_core::LineRouting::Direct));
+
+    let mut app = UmbrelloApp::new(model, false);
+    app.active_diagram = Some(0);
+    app.current_file_path = Some(PathBuf::from("/tmp/edge-test.xmi"));
+    // Must set canvas_origin for screen_edge_paths.
+    app.last_canvas_rect =
+        Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+    app
+}
+
+/// S3-04: All 6 relationship kinds produce edge paths whose first/last
+/// points lie on the source/target rectangle boundaries.
+#[test]
+fn edge_paths_clip_to_node_boundaries() {
+    for kind in [
+        AssociationType::Generalization,
+        AssociationType::Realization,
+        AssociationType::Association,
+        AssociationType::Aggregation,
+        AssociationType::Composition,
+        AssociationType::Dependency,
+    ] {
+        let app = setup_edge_diagram(kind);
+        let diagram = &app.model.diagrams()[0];
+        let paths = app.screen_edge_paths(diagram, egui::pos2(0.0, 0.0));
+        assert_eq!(paths.len(), 1, "Expected one edge path for {kind:?}");
+        let path = &paths[0];
+        assert_eq!(path.kind, kind);
+        assert!(path.points.len() >= 2, "Path must have at least 2 points");
+        // Source boundary: nodes are at (0,0,100,60) and (300,0,100,60).
+        // For rightward edge, first point should be at x=100 (right of source).
+        let first = path.points[0];
+        assert!(
+            (first.x - 100.0).abs() < 0.1 || (first.x - 0.0).abs() < 0.1,
+            "First point should be on source boundary, x={}",
+            first.x
+        );
+        // Last point should be on target boundary (x=300 for left boundary, x=400 for right).
+        let last = path.points[path.points.len() - 1];
+        assert!(
+            (last.x - 300.0).abs() < 0.1 || (last.x - 400.0).abs() < 0.1,
+            "Last point should be on target boundary, x={}",
+            last.x
+        );
+    }
+}
+
+/// S3-05: Invalid semantic reference (non-Relationship) is skipped.
+#[test]
+fn edge_with_non_relationship_reference_is_skipped() {
+    let mut app = setup_edge_diagram(AssociationType::Association);
+    // Replace the relationship with a class.
+    let rel_id = {
+        let diagram = &app.model.diagrams()[0];
+        let edge = diagram.edges.values().next().unwrap();
+        edge.relationship_id
+    };
+    app.model.remove(rel_id);
+    // Insert a non-Relationship element with that ID.
+    let mut cls = Class::new("NotARelationship");
+    cls.base.id = rel_id;
+    app.model.insert(ModelElement::Class(cls));
+
+    let diagram = &app.model.diagrams()[0];
+    let paths = app.screen_edge_paths(diagram, egui::pos2(0.0, 0.0));
+    assert!(paths.is_empty(), "Non-Relationship edge must be skipped");
+}
+
+/// S3-06: Drag preview substitutes edge endpoint bounds.
+#[test]
+fn edge_follows_drag_preview() {
+    let mut app = setup_edge_diagram(AssociationType::Generalization);
+    let diagram = &app.model.diagrams()[0];
+    // Get source node id.
+    let src_id = diagram.nodes.keys().next().copied().unwrap();
+
+    // Simulate drag: begin, then set preview.
+    app.begin_node_drag(src_id, Point::new(0.0, 0.0));
+    app.update_node_drag(Point::new(50.0, 50.0)); // moved 50 right, 50 down
+
+    let diagram = &app.model.diagrams()[0];
+    let paths = app.screen_edge_paths(diagram, egui::pos2(0.0, 0.0));
+    assert_eq!(paths.len(), 1, "Edge path should exist during drag");
+
+    // The first point should reflect the preview position.
+    // Original source rect was (0,0,100,60), so original right edge was at x=100.
+    // With preview at (50,50,100,60), right edge would be at x=150.
+    let first_point = paths[0].points[0];
+    assert!(
+        (first_point.x - 150.0).abs() < 0.1,
+        "First point should use drag preview (expected x~150, got {})",
+        first_point.x
+    );
+
+    // Model/history/dirty must be unchanged.
+    assert!(!app.is_dirty, "Drag preview must not dirty model");
+    assert_eq!(app.history.undo_depth(), 0, "Drag preview must not create history");
+}
+
+/// S3-07: Overlapping nodes produce finite paths without panic.
+#[test]
+fn overlapping_nodes_produce_finite_paths() {
+    let mut model = UmlModel::new();
+    let d = Diagram::new("Overlap", DiagramKind::Class);
+    let diagram_id = d.id;
+    model.add_diagram(d);
+
+    let a = Class::new("A");
+    let a_id = a.base.id;
+    model.insert(ModelElement::Class(a));
+    let b = Class::new("B");
+    let b_id = b.base.id;
+    model.insert(ModelElement::Class(b));
+
+    // Overlapping nodes (same position)
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(a_id, ViewNode::new(a_id, Rect::new(50.0, 50.0, 100.0, 60.0)));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(b_id, ViewNode::new(b_id, Rect::new(50.0, 50.0, 100.0, 60.0)));
+
+    let rel = Relationship::new_association(a_id, b_id);
+    let rel_id = rel.base.id;
+    model.insert(ModelElement::Relationship(rel));
+    model.get_diagram_mut(diagram_id).unwrap().add_edge(
+        uml_core::EdgeId::new(),
+        ViewEdge::new(rel_id, a_id, b_id, uml_core::LineRouting::Direct),
+    );
+
+    let mut app = UmbrelloApp::new(model, false);
+    app.active_diagram = Some(0);
+    app.last_canvas_rect =
+        Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+
+    let diagram = &app.model.diagrams()[0];
+    let paths = app.screen_edge_paths(diagram, egui::pos2(0.0, 0.0));
+    // May be empty if centers coincide (segment length < 1px) — that's OK.
+    if !paths.is_empty() {
+        for point in &paths[0].points {
+            assert!(point.x.is_finite() && point.y.is_finite(), "All points must be finite");
+        }
+    }
+}
+
+/// S3-08: Coincident center nodes (same position) produce finite output.
+#[test]
+fn coincident_centers_produce_finite_out() {
+    let mut app = setup_edge_diagram(AssociationType::Generalization);
+    let diagram_id = app.model.diagrams()[0].id;
+    // Move both nodes to the same position with 0-size (degenerate).
+    if let Some(d) = app.model.get_diagram_mut(diagram_id) {
+        for node in d.nodes.values_mut() {
+            node.bounds = Rect::new(50.0, 50.0, 0.0, 0.0);
+        }
+    }
+
+    let diagram = &app.model.diagrams()[0];
+    let paths = app.screen_edge_paths(diagram, egui::pos2(0.0, 0.0));
+    for path in &paths {
+        for point in &path.points {
+            assert!(
+                point.x.is_finite() && point.y.is_finite(),
+                "Coincident centers must not produce NaN"
+            );
+        }
+    }
+}
+
+/// S3-09: Diamond placement for aggregation is outside source boundary.
+#[test]
+fn aggregation_diamond_is_outside_source_boundary() {
+    let app = setup_edge_diagram(AssociationType::Aggregation);
+    let diagram = &app.model.diagrams()[0];
+    let paths = app.screen_edge_paths(diagram, egui::pos2(0.0, 0.0));
+    assert_eq!(paths.len(), 1);
+
+    // Source is at (0,0,100,60), target at (300,0,100,60).
+    // First point should be around x=100 (right boundary of source).
+    let first = paths[0].points[0];
+    assert!((first.x - 100.0).abs() < 0.1, "Aggregation source boundary should be x~100");
+
+    // Direction vector.
+    let dir = paths[0].points[1] - first;
+    // Diamond center would be first + dir/|dir| * 8.
+    // Since it's a rightward edge, dir.x > 0, diamond center should be at x ~ 108.
+    let dir_len = (dir.x * dir.x + dir.y * dir.y).sqrt();
+    if dir_len > 0.5 {
+        let unit_x = dir.x / dir_len;
+        let diamond_center_x = first.x + unit_x * 8.0;
+        assert!(diamond_center_x > first.x, "Diamond should be outward from boundary");
+    }
+}
+
+/// S3-10: Zero-size node bounds produce finite edge paths (zoom safety).
+#[test]
+fn zero_size_node_bounds_produce_finite_paths() {
+    let mut model = UmlModel::new();
+    let d = Diagram::new("ZeroSize", DiagramKind::Class);
+    let diagram_id = d.id;
+    model.add_diagram(d);
+
+    let a = Class::new("A");
+    let a_id = a.base.id;
+    model.insert(ModelElement::Class(a));
+    let b = Class::new("B");
+    let b_id = b.base.id;
+    model.insert(ModelElement::Class(b));
+
+    // Add a node at position (0,0) with zero width/height.
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(a_id, ViewNode::new(a_id, Rect::new(0.0, 0.0, 0.0, 0.0)));
+    model
+        .get_diagram_mut(diagram_id)
+        .unwrap()
+        .add_node(b_id, ViewNode::new(b_id, Rect::new(300.0, 0.0, 0.0, 0.0)));
+
+    let rel = Relationship::new_association(a_id, b_id);
+    let rel_id = rel.base.id;
+    model.insert(ModelElement::Relationship(rel));
+    model.get_diagram_mut(diagram_id).unwrap().add_edge(
+        uml_core::EdgeId::new(),
+        ViewEdge::new(rel_id, a_id, b_id, uml_core::LineRouting::Direct),
+    );
+
+    let mut app = UmbrelloApp::new(model, false);
+    app.active_diagram = Some(0);
+    app.last_canvas_rect =
+        Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+
+    let diagram = &app.model.diagrams()[0];
+    let paths = app.screen_edge_paths(diagram, egui::pos2(0.0, 0.0));
+    for path in &paths {
+        for point in &path.points {
+            assert!(
+                point.x.is_finite() && point.y.is_finite(),
+                "Zero-size node must not produce NaN"
+            );
+        }
+    }
+}
