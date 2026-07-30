@@ -23,3 +23,7 @@ target/doc-book/
 
 # Cargo lock
 # Cargo.lock IS committed because the workspace contains binary targets (uml-cli, umbrello-desktop)
+
+__pycache__/
+
+# Python
