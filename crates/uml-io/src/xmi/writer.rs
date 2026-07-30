@@ -2354,4 +2354,125 @@ mod tests {
         let errors = restored.validate_references();
         assert!(errors.is_empty(), "dangling refs: {:?}", errors);
     }
+
+    // ─── Direct-edge round-trip regression (RED/S1) ────────────────────
+
+    /// Regression (RED): after saving and reloading a model with a direct
+    /// association edge (empty waypoints), the restored edge must have empty
+    /// waypoints and no synthetic Package must be created from the outer
+    /// `UML:Model` wrapper.
+    ///
+    /// Current production behavior causes two failures:
+    ///   1. The writer emits `<startpoint startx="0" starty="0"/>` even when
+    ///      waypoints are empty; the reader converts these into real waypoints.
+    ///   2. The reader parses every `UML:Model` tag as a `Package`, so the
+    ///      document-level `<UML:Model name="UML Model">` becomes a semantic
+    ///      `ModelElement::Package`.
+    #[test]
+    fn direct_edge_round_trip_preserves_empty_waypoints() {
+        let mut model = UmlModel::new();
+
+        // Two classes
+        let cls1 = Class::new("ClassA");
+        let cls1_id = cls1.base.id;
+        model.insert(ModelElement::Class(cls1));
+
+        let cls2 = Class::new("ClassB");
+        let cls2_id = cls2.base.id;
+        model.insert(ModelElement::Class(cls2));
+
+        // One association
+        let rel = Relationship::new_association(cls1_id, cls2_id);
+        let rel_id = rel.base.id;
+        model.insert(ModelElement::Relationship(rel));
+
+        // One class diagram with two nodes (non-origin bounds) and one
+        // direct edge (empty waypoints).
+        let mut diagram = Diagram::new("Main", DiagramKind::Class);
+        let bounds1 = uml_core::Rect::new(100.0, 200.0, 160.0, 80.0);
+        let bounds2 = uml_core::Rect::new(400.0, 300.0, 160.0, 80.0);
+        diagram.add_node(cls1_id, uml_core::ViewNode::new(cls1_id, bounds1));
+        diagram.add_node(cls2_id, uml_core::ViewNode::new(cls2_id, bounds2));
+        diagram.add_edge(
+            uml_core::EdgeId::new(),
+            uml_core::ViewEdge::new(rel_id, cls1_id, cls2_id, LineRouting::Direct),
+        );
+        model.add_diagram(diagram);
+
+        // Round-trip: write → read → resolve
+        let xml = write_to_string(&model);
+        let mut restored = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xml.as_bytes(), &mut restored).unwrap();
+        reader.resolve(&mut restored).unwrap();
+
+        // ── Regression 1: no synthetic Package from the outer UML:Model ──
+        let pkg_count = restored
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Package(_)))
+            .count();
+        assert_eq!(
+            pkg_count, 0,
+            "Expected 0 Package elements; reader currently creates one for \
+             the outer UML:Model wrapper",
+        );
+
+        // ── Semantic element kinds preserved ────────────────────────────
+        let class_count = restored
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Class(_)))
+            .count();
+        let rel_count = restored
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Relationship(_)))
+            .count();
+        assert_eq!(class_count, 2, "Exactly 2 Class elements expected");
+        assert_eq!(rel_count, 1, "Exactly 1 Relationship element expected");
+
+        // ── Diagram structure preserved ─────────────────────────────────
+        assert_eq!(restored.diagrams().len(), 1, "Exactly 1 diagram expected");
+        let diag = &restored.diagrams()[0];
+        assert_eq!(diag.node_count(), 2, "Exactly 2 diagram nodes expected");
+        assert_eq!(diag.edges.len(), 1, "Exactly 1 diagram edge expected");
+
+        // ── Node geometries preserved (look up by restored element name) ─
+        let restored_ca_id = restored
+            .iter()
+            .find(|(_, e)| e.name() == "ClassA")
+            .map(|(id, _)| id)
+            .expect("ClassA must survive round-trip");
+        let restored_cb_id = restored
+            .iter()
+            .find(|(_, e)| e.name() == "ClassB")
+            .map(|(id, _)| id)
+            .expect("ClassB must survive round-trip");
+
+        if let Some(node) = diag.nodes.get(&restored_ca_id) {
+            assert_eq!(node.bounds, bounds1, "ClassA node bounds must survive round-trip");
+        } else {
+            panic!("ClassA node not found in restored diagram");
+        }
+        if let Some(node) = diag.nodes.get(&restored_cb_id) {
+            assert_eq!(node.bounds, bounds2, "ClassB node bounds must survive round-trip");
+        } else {
+            panic!("ClassB node not found in restored diagram");
+        }
+
+        // ── Regression 2: edge waypoints must be empty (direct edge) ────
+        let (_edge_id, edge) = diag.edges.iter().next().unwrap();
+        assert!(
+            edge.waypoints.is_empty(),
+            "Expected empty waypoints for direct edge; writer currently emits \
+             (0,0) placeholders: {:?}",
+            edge.waypoints,
+        );
+
+        // Edge endpoints match the restored node/model-element IDs
+        assert_eq!(edge.source_node_id, restored_ca_id, "Edge source must be ClassA");
+        assert_eq!(edge.target_node_id, restored_cb_id, "Edge target must be ClassB");
+
+        // ── No dangling references ──────────────────────────────────────
+        let errors = restored.validate_references();
+        assert!(errors.is_empty(), "dangling references after round-trip: {:?}", errors);
+    }
 }

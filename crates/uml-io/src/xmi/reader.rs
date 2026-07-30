@@ -3669,4 +3669,125 @@ mod tests {
     fn cpp_shared_id_association() {
         check_old_format_xmi(XMI_CSHARP_SHARED, 1, 1, "C++ shared-ID format");
     }
+
+    // ─── Transparent document Model wrapper (RED/S1) ────────────────────
+
+    /// Regression (RED): the outer document-level `<UML:Model>` container
+    /// must be transparent — it must NOT create a semantic `Package` element
+    /// in the model.  Structural children of the outer wrapper are unparented.
+    ///
+    /// Current production behaviour maps every `UML:Model` through
+    /// `parse_package`, so the outer wrapper becomes an extra
+    /// `ModelElement::Package`.
+    #[test]
+    fn document_model_wrapper_is_transparent() {
+        let xmi = r#"<?xml version="1.0"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Class xmi.id="C1" name="ClassA"/>
+    <UML:Class xmi.id="C2" name="ClassB"/>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+</XMI>"#;
+
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xmi.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        // The outer UML:Model document container must NOT create a Package.
+        let pkg_count = model
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Package(_)))
+            .count();
+        assert_eq!(
+            pkg_count, 0,
+            "Outer UML:Model must be transparent (no Package); current \
+             reader creates a Package for every UML:Model element"
+        );
+
+        // Two classes survive.
+        let class_count = model
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Class(_)))
+            .count();
+        assert_eq!(class_count, 2, "Two classes must be present");
+
+        // Classes have no package parent (the transparent wrapper does not
+        // push onto parent_stack).
+        for (id, _) in model
+            .iter()
+            .filter(|(_, e)| matches!(e, ModelElement::Class(_)))
+        {
+            let parents = model.parents_of(id);
+            assert!(
+                parents.is_none(),
+                "Class must be unparented under a transparent wrapper; \
+                 got parents: {:?}",
+                parents
+            );
+        }
+
+        // No dangling references.
+        let errors = model.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
+
+    /// A nested `<UML:Model>` or `<UML:Package>` element must remain a
+    /// semantic `Package` with correct ID-based containment, even when the
+    /// outer document Model is made transparent.  This test verifies the
+    /// invariant: nested namespaces are never transparent.
+    #[test]
+    fn nested_model_remains_semantic_package() {
+        let xmi = r#"<?xml version="1.0"?>
+<XMI xmi.version="1.2" xmlns:UML="http://schema.omg.org/spec/UML/1.3">
+ <XMI.header/>
+ <XMI.content>
+  <UML:Model xmi.id="m1" name="UML Model">
+   <UML:Namespace.ownedElement>
+    <UML:Model xmi.id="nested1" name="NestedModel">
+     <UML:Namespace.ownedElement>
+      <UML:Class xmi.id="C1" name="ClassInNested"/>
+     </UML:Namespace.ownedElement>
+    </UML:Model>
+   </UML:Namespace.ownedElement>
+  </UML:Model>
+ </XMI.content>
+</XMI>"#;
+
+        let mut model = UmlModel::new();
+        let mut reader = XmiReader::new();
+        reader.read_from(xmi.as_bytes(), &mut model).unwrap();
+        reader.resolve(&mut model).unwrap();
+
+        // Find the nested namespace by name.
+        let nested = model.iter().find(|(_, e)| e.name() == "NestedModel");
+        assert!(nested.is_some(), "NestedModel must be present");
+        let (nested_id, _) = nested.unwrap();
+        assert!(
+            matches!(model.get(nested_id), Some(ModelElement::Package(_))),
+            "Nested Model must be a Package element"
+        );
+
+        // The class inside the nested namespace.
+        let class_in = model.iter().find(|(_, e)| e.name() == "ClassInNested");
+        assert!(class_in.is_some(), "ClassInNested must be present");
+        let (class_id, _) = class_in.unwrap();
+
+        // Class is a child of the nested Package (ID-based containment).
+        let parents = model.parents_of(class_id).unwrap_or(&[]);
+        assert!(
+            parents.contains(&nested_id),
+            "ClassInNested must be a child of NestedModel Package; parents: {:?}",
+            parents
+        );
+
+        // No dangling references.
+        let errors = model.validate_references();
+        assert!(errors.is_empty(), "dangling references: {:?}", errors);
+    }
 }
