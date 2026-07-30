@@ -416,35 +416,43 @@ impl UmbrelloApp {
         ui.add_space(4.0);
 
         // ── Apply / Revert buttons ──────────────────────────────
+        let fallback_draft = draft.clone();
         ui.horizontal(|ui| {
             if ui.button("Apply").clicked() {
                 match self.apply_classifier_draft(id, &draft) {
                     Ok(true) => {
                         status = "Classifier features updated".into();
-                        // Restore from model after apply
+                        // Restore from model after apply; draft is consumed.
                         self.refresh_property_buffers();
                     },
                     Ok(false) => {
                         status = "Classifier unchanged (no changes)".into();
+                        // Fall through to restore the unmodified draft below.
                     },
                     Err(error) => {
                         status = format!("Apply failed: {error}");
-                        // Restore draft in case of error
+                        // Restore draft so the user can correct the error.
                         self.classifier_draft = Some((draft_id, draft));
                     },
                 }
                 self.status_message = status.clone();
-                if status.contains("failed") {
-                    // draft was restored in Err arm; do not overwrite
-                } else {
-                    return; // UI will re-render on next frame
-                }
             }
             if ui.button("Revert").clicked() {
                 self.refresh_property_buffers();
                 self.status_message = "Classifier draft reverted".into();
             }
         });
+
+        // ── Restore draft for next frame if not already refreshed ──
+        // The draft was taken at the top of this method to avoid borrow
+        // conflicts with egui closures.  Ordinary frames, no-op Apply,
+        // and Revert all fall through to here and MUST restore the draft.
+        // Successful Apply or Err branches already set classifier_draft
+        // via refresh_property_buffers or direct assignment, so we use
+        // the pre-cloned fallback only when needed.
+        if self.classifier_draft.is_none() {
+            self.classifier_draft = Some((draft_id, fallback_draft));
+        }
     }
 }
 

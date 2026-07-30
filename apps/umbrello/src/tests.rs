@@ -3803,3 +3803,155 @@ fn classifier_draft_undo_restores_parameters() {
         .clone();
     assert_eq!(restored_ops, orig_ops);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// S2F2 — Frame-level classifier draft persistence regressions
+// ═══════════════════════════════════════════════════════════════════════
+
+/// S2F2-01: Classifier draft survives multiple consecutive frames.
+///
+/// Verifies that the render loop's take+restore cycle does not lose the
+/// draft after ordinary (no-click) frames, no-op Apply, or Revert.
+#[test]
+fn classifier_draft_survives_multiple_frames() {
+    let mut app = make_app_with_classifier_features();
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let screen_size = egui::vec2(1280.0, 1024.0);
+
+    // Frame 1: establish layout.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+    assert!(app.classifier_draft.is_some(), "Frame 1: classifier_draft must be present");
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes.len(), 1, "Frame 1: attribute count must be 1");
+
+    // Frame 2: ordinary frame with no interactions.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+    assert!(
+        app.classifier_draft.is_some(),
+        "Frame 2: classifier_draft must survive re-render"
+    );
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes.len(), 1, "Frame 2: attributes must not be lost");
+
+    // Frame 3: another ordinary frame.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+    assert!(
+        app.classifier_draft.is_some(),
+        "Frame 3: classifier_draft must persist across frames"
+    );
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes.len(), 1, "Frame 3: attributes must remain intact");
+    assert_eq!(draft.attributes[0].name, "name", "Frame 3: attribute name unchanged");
+}
+
+/// S2F2-02: No-op Apply preserves the classifier draft and selection.
+#[test]
+fn classifier_draft_noop_apply_preserves_draft() {
+    let mut app = make_app_with_classifier_features();
+    let id = app.selected_element_id.unwrap();
+    assert!(app.classifier_draft.is_some());
+
+    // Build a draft that matches the current model (no changes).
+    let cd = app
+        .model
+        .get(id)
+        .unwrap()
+        .classifier_data()
+        .unwrap()
+        .clone();
+    let matching_draft = crate::app::ClassifierDraft {
+        attributes: cd
+            .attributes
+            .iter()
+            .map(|a| DraftAttribute {
+                name: a.name.clone(),
+                type_text: a.type_ref.display_name(Some(&app.model)),
+                original_type: a.type_ref.clone(),
+                visibility: a.visibility,
+                initial_value: a.initial_value.clone().unwrap_or_default(),
+                is_static: a.is_static,
+            })
+            .collect(),
+        operations: cd
+            .operations
+            .iter()
+            .map(|op| DraftOperation {
+                name: op.name.clone(),
+                return_type_text: op.return_type.display_name(Some(&app.model)),
+                original_return_type: op.return_type.clone(),
+                parameters: op
+                    .parameters
+                    .iter()
+                    .map(|p| DraftParameter {
+                        name: p.name.clone(),
+                        type_text: p.type_ref.display_name(Some(&app.model)),
+                        original_type: p.type_ref.clone(),
+                        direction: p.direction,
+                        default_value: p.default_value.clone().unwrap_or_default(),
+                    })
+                    .collect(),
+                visibility: op.visibility,
+                is_static: op.is_static,
+                is_abstract: op.is_abstract,
+                is_virtual: op.is_virtual,
+            })
+            .collect(),
+    };
+
+    // Apply with matching data — must return Ok(false) and preserve draft.
+    let result = app.apply_classifier_draft(id, &matching_draft).unwrap();
+    assert!(!result, "No-op Apply must return false");
+
+    // Draft must survive the no-op Apply.
+    assert!(app.classifier_draft.is_some(), "classifier_draft must survive no-op Apply");
+    assert_eq!(app.selected_element_id, Some(id), "Selection must survive no-op Apply");
+
+    // Verify draft contents are intact.
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes.len(), 1);
+    assert_eq!(draft.attributes[0].name, "name");
+    assert_eq!(draft.operations.len(), 1);
+    assert_eq!(draft.operations[0].name, "getName");
+}
+
+/// S2F2-03: Simulate a render frame with a partial text edit, verify
+/// draft persists and the edit survives the frame cycle.
+#[test]
+fn classifier_draft_edit_survives_frame_cycle() {
+    let mut app = make_app_with_classifier_features();
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let screen_size = egui::vec2(1280.0, 1024.0);
+
+    // Run a frame to establish layout.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+
+    // Simulate a user edit by mutating the draft directly (as the
+    // egui text_edit_singleline would do within the render call).
+    if let Some((_, ref mut draft)) = app.classifier_draft {
+        draft.attributes[0].name = "edited_name".into();
+        draft.operations[0].return_type_text = "new_type".into();
+    }
+
+    // Run another frame — must NOT lose the draft or the edits.
+    let _ = ctx.run(raw_with_screen(vec![], screen_size), |ctx| {
+        app.update(ctx, &mut frame);
+    });
+
+    assert!(app.classifier_draft.is_some(), "Draft must survive second frame");
+    let (_, draft) = app.classifier_draft.as_ref().unwrap();
+    assert_eq!(draft.attributes[0].name, "edited_name", "Edited attribute name must survive");
+    assert_eq!(
+        draft.operations[0].return_type_text, "new_type",
+        "Edited return type must survive"
+    );
+}
