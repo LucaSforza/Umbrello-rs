@@ -12,10 +12,20 @@
         "bash": true
       }
     },
-    "implementer": {
+    "implementer-deepseek": {
+      "mode": "subagent",
+      "model": "deepseek/deepseek-v4-flash",
+      "description": "Umbrello Rust Implementer (DeepSeek)",
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
+    },
+    "implementer-openai": {
       "mode": "subagent",
       "model": "openai/gpt-5.6-luna",
-      "description": "Umbrello Rust Implementer",
+      "description": "Umbrello Rust Implementer (OpenAI)",
       "tools": {
         "write": true,
         "edit": true,
